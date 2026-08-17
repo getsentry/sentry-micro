@@ -32,3 +32,6 @@
 - Offline ring buffer (`core/sentry_buffer.*`): portable ring policy over a pluggable
   storage vtable, so undelivered envelopes survive a reboot. Host-tested including wrapped
   recovery, corrupt metadata, and failed writes. NVS storage and SDK wiring still to come.
+- NVS and filesystem (LittleFS/SPIFFS/SD) storage backends, plus `sentry_enable_buffering()`
+  and `sentry_flush()`. Undelivered envelopes persist and are retried; server-supplied
+  `Retry-After` is honoured.

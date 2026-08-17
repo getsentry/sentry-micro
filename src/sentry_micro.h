@@ -33,6 +33,7 @@
 #define SENTRY_MICRO_H_INCLUDED
 
 #include "core/sentry_boot.h"
+#include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
 #include "core/sentry_transport.h"
@@ -188,6 +189,38 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
  * attached, which is the same "buffer it and retry" signal a downed radio produces.
  */
 sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len);
+
+/**
+ * Turn on offline buffering, backed by `storage`.
+ *
+ * Once enabled, an envelope that cannot be delivered is persisted instead of dropped, and
+ * `sentry_flush()` retries it later. This is what lets the most valuable event the SDK
+ * produces — the report of the crash that just happened, built at boot before the radio is
+ * up — actually survive to be sent.
+ *
+ * `storage` is stored by pointer and must outlive the SDK. Returns false if the storage is
+ * unusable, in which case the SDK carries on unbuffered rather than refusing to run.
+ */
+bool sentry_enable_buffering(const sentry_storage_t *storage);
+
+/** Envelopes waiting to be delivered. 0 when buffering is off. */
+uint32_t sentry_buffered_count(void);
+
+/** Envelopes evicted because the buffer filled up, since the counter was last reported. */
+uint32_t sentry_dropped_count(void);
+
+/**
+ * Try to deliver up to `max_events` buffered envelopes, oldest first.
+ *
+ * Stops at the first one that does not go through, so a downed network costs a single
+ * failed attempt rather than one per queued event. Respects any backoff the server asked
+ * for. Safe and cheap to call from `loop()`; it returns immediately when there is nothing
+ * to do or the backoff has not expired.
+ *
+ * Uses `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` of the calling stack. Returns how many were
+ * delivered.
+ */
+uint32_t sentry_flush(uint32_t max_events);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -19,6 +19,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <device/sentry_storage_nvs.h>
 #include <sentry_micro.h>
 #include <transport/sentry_transport_serial.hpp>
 #include <transport/sentry_transport_wifi.hpp>
@@ -271,6 +272,18 @@ void setup()
         Serial.println("[sentry] init failed — check SENTRY_DSN in src/secrets.h");
     }
 
+    /*
+     * Buffering, before anything is sent. Eight slots of NVS is roughly 6 KB of the stock
+     * 20 KB partition. Anything that cannot be delivered now is persisted and retried by
+     * sentry_flush() below, which is what makes a boot-time crash report survive having no
+     * network at the moment it is created.
+     */
+    if (!sentry_enable_buffering(sentry_storage_nvs(8))) {
+        Serial.println("[sentry] NVS unavailable — running without an offline buffer");
+    }
+    Serial.printf("[sentry] %u envelope(s) buffered from a previous run, %u dropped\n",
+        (unsigned)sentry_buffered_count(), (unsigned)sentry_dropped_count());
+
     print_sentry_state();
 
     /*
@@ -297,6 +310,18 @@ void loop()
 {
     /* Once a minute, show that the device is alive and what its resources look like —
      * the same numbers that will ride along on every event as device context. */
+    /* Retry anything the buffer is holding — this is how an event created before the radio
+     * came up eventually gets out.
+     *
+     * On an interval, not every iteration: a transport can block for seconds when there is
+     * no route (the serial relay waits for a host that may not be listening), so flushing
+     * every pass would turn `loop()` into a chain of timeouts. */
+    static uint32_t last_flush = 0;
+    if (sentry_buffered_count() > 0 && millis() - last_flush >= 30000) {
+        last_flush = millis();
+        sentry_flush(2);
+    }
+
     static uint32_t last_report = 0;
     if (millis() - last_report >= 60000) {
         last_report = millis();

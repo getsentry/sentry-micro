@@ -33,6 +33,17 @@
 #define SENTRY_MICRO_MAX_PROJECT_ID_LEN 24
 /* Org ids are u64 in Relay: 20 digits plus the terminator. */
 #define SENTRY_MICRO_MAX_ORG_ID_LEN 21
+/**
+ * Scratch space `sentry_flush()` reads a buffered envelope into, on the caller's stack.
+ *
+ * Not a static allocation: buffering is optional, and a device that never buffers should
+ * not pay for it in permanent RAM. Override with `-D` if your events are larger — an
+ * envelope that does not fit is skipped, not truncated.
+ */
+#ifndef SENTRY_MICRO_ENVELOPE_BUFFER_BYTES
+#    define SENTRY_MICRO_ENVELOPE_BUFFER_BYTES 2048
+#endif
+
 /* Ingest URL + the `X-Sentry-Auth` header value, both built once at init. */
 #define SENTRY_MICRO_MAX_URL_LEN 320
 #define SENTRY_MICRO_MAX_AUTH_LEN 256

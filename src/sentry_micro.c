@@ -21,6 +21,17 @@ typedef struct {
     char envelope_url[SENTRY_MICRO_MAX_URL_LEN];
     char auth_header[SENTRY_MICRO_MAX_AUTH_LEN];
     bool enabled;
+
+    sentry_buffer_t buffer;
+    bool buffering;
+    /**
+     * Uptime, in ms, before which no delivery should be attempted.
+     *
+     * Set from a server-supplied Retry-After. Honouring it is the difference between a
+     * boot-looping device backing off politely and one hammering ingest with the same
+     * crash until the whole project is rate-limited for everyone using it.
+     */
+    uint64_t retry_after_uptime_ms;
 } sentry_state_t;
 
 static sentry_state_t g_state;
@@ -130,12 +141,9 @@ void sentry_set_transport(const sentry_transport_t *transport)
 
 const sentry_transport_t *sentry_get_transport(void) { return g_state.transport; }
 
-sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
+/** Deliver without touching the buffer. Shared by the direct path and by flush. */
+static sentry_response_t deliver(const uint8_t *envelope, size_t len)
 {
-    if (!g_state.enabled || !envelope || len == 0) {
-        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
-    }
-
     sentry_headers_t headers;
     headers.auth = g_state.auth_header;
     headers.content_type = "application/x-sentry-envelope";
@@ -143,10 +151,126 @@ sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
     sentry_response_t response
         = sentry_transport_send(g_state.transport, g_state.envelope_url, &headers, envelope, len);
 
-    debug_log("sent %u bytes via %s: result %d, http %u", (unsigned)len,
-        sentry_transport_name(g_state.transport), (int)response.result,
-        (unsigned)response.http_status);
+    if (response.retry_after_ms > 0) {
+        g_state.retry_after_uptime_ms = sentry_device_uptime_ms() + response.retry_after_ms;
+        debug_log("backing off for %ums as instructed", (unsigned)response.retry_after_ms);
+    }
     return response;
+}
+
+/** True when a previous response told us to wait and that wait has not elapsed. */
+static bool in_backoff(void)
+{
+    return g_state.retry_after_uptime_ms > 0
+        && sentry_device_uptime_ms() < g_state.retry_after_uptime_ms;
+}
+
+/**
+ * Whether a failure is worth keeping the envelope for.
+ *
+ * REJECTED is excluded deliberately: ingest understood the request and will not accept it,
+ * so buffering it means retrying something that can never succeed — forever, on every boot.
+ */
+static bool worth_retrying(sentry_send_result_t result)
+{
+    return result == SENTRY_SEND_UNAVAILABLE || result == SENTRY_SEND_ERROR
+        || result == SENTRY_SEND_RATE_LIMITED;
+}
+
+sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
+{
+    if (!g_state.enabled || !envelope || len == 0) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+
+    sentry_response_t response;
+    if (in_backoff()) {
+        /* Do not even attempt it; go straight to the buffer if there is one. */
+        response = sentry_response_make(SENTRY_SEND_RATE_LIMITED);
+    } else {
+        response = deliver(envelope, len);
+        debug_log("sent %u bytes via %s: result %d, http %u", (unsigned)len,
+            sentry_transport_name(g_state.transport), (int)response.result,
+            (unsigned)response.http_status);
+    }
+
+    if (response.result != SENTRY_SEND_OK && g_state.buffering && worth_retrying(response.result)) {
+        if (sentry_buffer_push(&g_state.buffer, envelope, len)) {
+            debug_log(
+                "buffered for retry (%u waiting)", (unsigned)sentry_buffer_count(&g_state.buffer));
+        } else {
+            debug_log("could not buffer the envelope; it is lost");
+        }
+    }
+    return response;
+}
+
+bool sentry_enable_buffering(const sentry_storage_t *storage)
+{
+    g_state.buffering = sentry_buffer_init(&g_state.buffer, storage);
+    if (g_state.buffering) {
+        debug_log("buffering enabled: %u waiting, %u previously dropped",
+            (unsigned)sentry_buffer_count(&g_state.buffer),
+            (unsigned)sentry_buffer_dropped(&g_state.buffer));
+    } else {
+        debug_log("storage unusable; continuing without buffering");
+    }
+    return g_state.buffering;
+}
+
+uint32_t sentry_buffered_count(void)
+{
+    return g_state.buffering ? sentry_buffer_count(&g_state.buffer) : 0;
+}
+
+uint32_t sentry_dropped_count(void)
+{
+    return g_state.buffering ? sentry_buffer_dropped(&g_state.buffer) : 0;
+}
+
+uint32_t sentry_flush(uint32_t max_events)
+{
+    if (!g_state.enabled || !g_state.buffering || in_backoff()) {
+        return 0;
+    }
+
+    uint8_t envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    uint32_t delivered = 0;
+
+    while (delivered < max_events && sentry_buffer_count(&g_state.buffer) > 0) {
+        size_t len = 0;
+        if (!sentry_buffer_peek(&g_state.buffer, envelope, sizeof(envelope), &len)) {
+            /* Unreadable or too large for the scratch buffer. Retrying it would wedge the
+             * queue behind one bad entry forever, so drop it and keep going. */
+            debug_log("discarding an unreadable buffered envelope");
+            sentry_buffer_pop(&g_state.buffer);
+            continue;
+        }
+
+        sentry_response_t response = deliver(envelope, len);
+        if (response.result == SENTRY_SEND_OK) {
+            sentry_buffer_pop(&g_state.buffer);
+            delivered++;
+            continue;
+        }
+
+        if (!worth_retrying(response.result)) {
+            /* Permanently rejected: dropping it is the only way the queue ever drains. */
+            debug_log("dropping a rejected envelope (http %u)", (unsigned)response.http_status);
+            sentry_buffer_pop(&g_state.buffer);
+            continue;
+        }
+
+        /* Still no route. Stop rather than retrying every queued event against a network
+         * that is plainly down — one failed attempt per flush, not N. */
+        break;
+    }
+
+    if (delivered > 0) {
+        debug_log("flushed %u envelopes, %u still waiting", (unsigned)delivered,
+            (unsigned)sentry_buffer_count(&g_state.buffer));
+    }
+    return delivered;
 }
 
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
