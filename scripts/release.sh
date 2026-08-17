@@ -113,17 +113,56 @@ if [ "$DO_UPLOAD" -eq 1 ]; then
         echo "       brew install getsentry/tools/sentry-cli" >&2
         exit 1
     fi
+    if [ -z "${SENTRY_AUTH_TOKEN:-}" ] && [ ! -f "$HOME/.sentryclirc" ]; then
+        echo
+        echo "error: no Sentry credentials." >&2
+        echo "       export SENTRY_AUTH_TOKEN=... (Settings -> Auth Tokens)," >&2
+        echo "       or run 'sentry-cli login', or pass --no-upload." >&2
+        exit 1
+    fi
+
+    # Derive org and project from the DSN rather than making the user configure them twice.
+    # sentry-cli accepts numeric IDs as well as slugs, and both are already in the DSN:
+    # the org is the `o<digits>` host prefix, the project is the path.
+    if [ -z "${SENTRY_ORG:-}" ] || [ -z "${SENTRY_PROJECT:-}" ]; then
+        if [ -n "${SENTRY_MICRO_DSN:-}" ]; then
+            eval "$(python3 - "$SENTRY_MICRO_DSN" <<'PYEOF'
+import re, sys
+from urllib.parse import urlparse
+dsn = urlparse(sys.argv[1])
+host = dsn.hostname or ""
+org = re.match(r"o(\d+)\.", host)
+project = (dsn.path or "").strip("/").split("/")[-1]
+if org:
+    print(f'export SENTRY_ORG="{org.group(1)}"')
+if project:
+    print(f'export SENTRY_PROJECT="{project}"')
+PYEOF
+)"
+        fi
+    fi
+    if [ -z "${SENTRY_ORG:-}" ] || [ -z "${SENTRY_PROJECT:-}" ]; then
+        echo
+        echo "error: could not determine org/project." >&2
+        echo "       set SENTRY_MICRO_DSN, or export SENTRY_ORG and SENTRY_PROJECT." >&2
+        exit 1
+    fi
+    echo "  org       ${SENTRY_ORG}"
+    echo "  project   ${SENTRY_PROJECT}"
+
     echo
     echo "→ uploading debug files to Sentry"
     # --include-sources embeds the source text, so Sentry shows the offending line and not
     # just its number. Harmless for a private project; drop it if the code is not yours.
-    sentry-cli debug-files upload --include-sources "$ELF"
+    sentry-cli debug-files upload --include-sources \
+        --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "$ELF"
 
     echo
     echo "→ registering the release"
-    # Lets Sentry associate events with this build even before any crash arrives.
-    sentry-cli releases new "$RELEASE" >/dev/null 2>&1 || true
-    sentry-cli releases set-commits --auto "$RELEASE" >/dev/null 2>&1 || true
+    # Lets Sentry associate events with this build even before any crash arrives. Not fatal
+    # if it fails — the debug files are what symbolication actually needs.
+    sentry-cli releases new --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "$RELEASE" \
+        >/dev/null 2>&1 || echo "  (could not register the release; debug files are uploaded)"
 fi
 
 if [ "$UPLOAD_FIRMWARE" -eq 1 ]; then

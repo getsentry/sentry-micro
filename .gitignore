@@ -18,3 +18,6 @@ Thumbs.db
 
 # Scratch space
 scratchpad/
+
+# sentry-cli credentials, if one ever lands in the working tree
+.sentryclirc

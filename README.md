@@ -277,6 +277,21 @@ scripts/release.sh -e esp32dev -r 'my-firmware@1.2.3'
 which picks a build-id, compiles it in, stamps it into the ELF, and uploads the ELF to
 Sentry with `sentry-cli`. After that, addresses in an event resolve to functions and lines.
 
+The only credential it needs is a token — org and project are read out of the DSN, since
+both are already in it and `sentry-cli` accepts numeric ids:
+
+```bash
+brew install getsentry/tools/sentry-cli          # once
+export SENTRY_AUTH_TOKEN='sntrys_...'            # Sentry -> Settings -> Auth Tokens
+export SENTRY_MICRO_DSN='https://...'
+scripts/release.sh -e esp32dev
+```
+
+The token needs the `project:write` scope (to upload debug files) and `project:releases`
+(to register the release). An organization auth token has both by default and is what CI
+should use. `sentry-cli login` works too, for a browser flow on a workstation. Pass
+`--no-upload` to build and stamp without talking to Sentry at all.
+
 **Do not use `-Wl,--build-id`.** On ESP32 the linker marks the note `ALLOC` and places it at
 the start of IRAM, pushing `.iram0.vectors` off `0x40080000`:
 
