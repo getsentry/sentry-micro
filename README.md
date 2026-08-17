@@ -510,6 +510,8 @@ Implemented today:
 - [x] Debug files uploaded and confirmed usable by Sentry (`symtab, debug, unwind`), indexed
       under the same `debug_id` the device reports
 - [x] Core dumps read on the next boot and reported as an exception with a stacktrace
+      (Xtensa: full backtrace. RISC-V: two frames, tagged `backtrace:truncated` — ESP-IDF
+      does not unwind RISC-V, so a real trace needs server-side unwinding of the stack dump)
 - [x] **Symbolicated end to end on hardware** — function, file, line and source, from a
       deliberate null dereference on an ESP32-PICO-D4
 

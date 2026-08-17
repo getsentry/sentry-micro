@@ -510,6 +510,30 @@ static void test_frames_are_reversed_for_sentry(void)
     TEST_ASSERT_TRUE_MESSAGE(outermost < crashing, "frames are not oldest-first");
 }
 
+static void test_truncated_backtraces_say_so(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"backtrace\":\"complete\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"frames_captured\":3"));
+
+    /* The RISC-V case: two frames, and the event must not let them pass for a whole stack.
+     * Without this a reader concludes the crashing function was called directly by the one
+     * above it, which on a C-series part is almost never true. */
+    crash.frame_count = 2;
+    crash.truncated = true;
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"backtrace\":\"truncated\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"backtrace_truncated\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"frames_captured\":2"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crash_task\":\"loopTask\""));
+}
+
 static void test_event_without_a_crash_has_no_exception(void)
 {
     sentry_device_info_t device = sample_device();
@@ -552,6 +576,7 @@ int main(void)
     RUN_TEST(test_event_omits_unknown_optional_fields);
     RUN_TEST(test_crash_event_carries_an_exception);
     RUN_TEST(test_frames_are_reversed_for_sentry);
+    RUN_TEST(test_truncated_backtraces_say_so);
     RUN_TEST(test_event_without_a_crash_has_no_exception);
     RUN_TEST(test_envelope_header_length_matches_the_payload);
     RUN_TEST(test_envelope_reports_the_size_it_needs);

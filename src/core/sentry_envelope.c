@@ -144,6 +144,19 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_kv_bool(writer, "crashed", sentry_reset_reason_is_crash(device->reset_reason));
     }
     sentry_json_kv_string_opt(writer, "board", event->board);
+    if (event->coredump && event->coredump->available) {
+        /*
+         * Whether the stack we sent is the whole stack.
+         *
+         * A tag rather than a buried field, because without it two frames look exactly like
+         * a two-deep call stack and a reader will draw a confident wrong conclusion about
+         * where the crash came from. It is also the dimension you want to filter on —
+         * "show me the crashes we actually got a full trace for" — which on the C-series is
+         * currently none of them: ESP-IDF does not unwind RISC-V.
+         */
+        sentry_json_kv_string(
+            writer, "backtrace", event->coredump->truncated ? "truncated" : "complete");
+    }
     sentry_json_object_end(writer);
 
     sentry_json_key(writer, "contexts");
@@ -181,6 +194,11 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
     sentry_json_kv_uint(writer, "uptime_ms", event->uptime_ms);
     sentry_json_kv_uint(writer, "free_heap", event->free_heap_bytes);
     sentry_json_kv_uint(writer, "min_free_heap", event->min_free_heap_bytes);
+    if (event->coredump && event->coredump->available) {
+        sentry_json_kv_uint(writer, "frames_captured", event->coredump->frame_count);
+        sentry_json_kv_bool(writer, "backtrace_truncated", event->coredump->truncated);
+        sentry_json_kv_string_opt(writer, "crash_task", event->coredump->task_name);
+    }
     if (device) {
         sentry_json_kv_uint(writer, "chip_revision", device->chip_revision);
     }

@@ -56,3 +56,6 @@
   link) can perform the request. Host-whitelisted like the other transports.
 - Core dump reading now has a real RISC-V path; the C-series report `mcause`/`mtval` and no
   precomputed backtrace, which is a different structure rather than different field names.
+- Events say whether the backtrace is complete: a `backtrace` tag plus `frames_captured` and
+  `backtrace_truncated` in the esp32 context, so a short RISC-V trace cannot be mistaken for
+  a whole stack.
