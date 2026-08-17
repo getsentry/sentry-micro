@@ -1,0 +1,14 @@
+# Matches sentry-native's style so the two SDKs read as siblings, with two deviations:
+#
+#   ColumnLimit 100 (not 80) — embedded code carries long ESP-IDF identifiers, and 80
+#   columns turns most of them into three-line calls.
+#
+#   No AlwaysBreakAfterDefinitionReturnType — sentry-native is C; this codebase has a C++
+#   surface where a return type on its own line reads badly for member functions.
+BasedOnStyle: WebKit
+IndentWidth: 4
+IndentPPDirectives: AfterHash
+ColumnLimit: 100
+PointerAlignment: Right
+InsertNewlineAtEOF: True
+SortIncludes: CaseInsensitive

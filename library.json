@@ -1,0 +1,44 @@
+{
+  "name": "sentry-micro",
+  "version": "0.1.0",
+  "description": "Sentry SDK for microcontrollers. Captures crashes, reset reasons and device telemetry on an ESP32 and delivers them to Sentry over any transport — WiFi directly, or relayed byte-for-byte through a companion app.",
+  "keywords": [
+    "sentry",
+    "crash-reporting",
+    "error-tracking",
+    "telemetry",
+    "esp32",
+    "embedded",
+    "iot"
+  ],
+  "homepage": "https://sentry.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getsentry/sentry-micro.git"
+  },
+  "authors": [
+    {
+      "name": "Sentry",
+      "url": "https://sentry.io",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "headers": "sentry_micro.h",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "examples": [
+    {
+      "name": "wifi_basic",
+      "base": "examples/wifi_basic",
+      "files": ["platformio.ini", "src/main.cpp", "src/secrets.example.h"]
+    }
+  ],
+  "export": {
+    "exclude": [
+      "examples/*/.pio",
+      ".github",
+      "scripts"
+    ]
+  }
+}

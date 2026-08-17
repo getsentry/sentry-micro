@@ -1,0 +1,21 @@
+# sentry-micro reference partition table — 4 MB flash.
+#
+# Identical to the stock Arduino "default" 4 MB layout except for the `coredump`
+# partition, which the stock table omits. That partition is what makes a field panic
+# recoverable: the ESP-IDF panic handler writes an ELF core dump into it before the chip
+# resets, and on the next boot `esp_core_dump_get_summary()` yields the crashing task,
+# the exception PC, and a short backtrace — the input to a symbolicated Sentry event.
+#
+# 64 KB is sized for the *summary* path, not for shipping whole dumps: it comfortably
+# holds a dump the summary API can parse, and the app slots keep the headroom instead.
+# Raise it to 0x20000 if you plan to attach full coredumps to events.
+#
+# Offsets and sizes of app partitions must stay 64 KB (0x10000) aligned.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1C0000,
+app1,       app,  ota_1,    0x1D0000, 0x1C0000,
+coredump,   data, coredump, 0x390000, 0x10000,
+spiffs,     data, spiffs,   0x3A0000, 0x60000,

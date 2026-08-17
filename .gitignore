@@ -1,0 +1,20 @@
+# PlatformIO build output and resolved dependencies
+.pio/
+
+# Local WiFi credentials and DSNs. `secrets.example.h` IS tracked; the real one never is —
+# a DSN in git history is a public write key for your Sentry project.
+secrets.h
+
+# Build artifacts
+*.elf
+*.bin
+*.map
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scratch space
+scratchpad/

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a PR makes the in-flight run obsolete; toolchain downloads are slow
+# enough that letting superseded runs finish is a real waste of CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      # The portable core builds and runs on the host, so this gate costs seconds and
+      # catches DSN/envelope regressions long before any board is involved.
+      - name: Run tests
+        run: pio test -e native
+
+  build:
+    name: Build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every broken variant in one run rather than one per push — the whole point
+      # of the matrix is finding out that, say, only the RISC-V target regressed.
+      fail-fast: false
+      matrix:
+        env: [esp32dev, esp32-s2, esp32-s3, esp32-c3, esp32-c6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Toolchains are hundreds of megabytes and identical between runs; keyed on the
+      # platformio.ini that pins them so a version bump invalidates the cache.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ matrix.env }}-${{ hashFiles('examples/wifi_basic/platformio.ini') }}
+          restore-keys: pio-${{ matrix.env }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build wifi_basic
+        working-directory: examples/wifi_basic
+        run: pio run -e ${{ matrix.env }}
