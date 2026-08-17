@@ -94,11 +94,40 @@ echo
 export SENTRY_MICRO_BUILD_ID="$BUILD_ID"
 export SENTRY_MICRO_RELEASE="$RELEASE"
 
-echo "→ building"
+ELF="${REPO_ROOT}/${PROJECT_DIR}/.pio/build/${ENVIRONMENT}/firmware.elf"
+
+# Two passes, and the second one is not optional.
+#
+# Sentry maps an address back to a function using `instruction_addr - image_addr`, so the
+# firmware has to report the ELF's load address and extent — which only exist once the ELF
+# has been linked. The first pass produces an ELF to measure; the second bakes the
+# measurements in. Skipping it costs nothing visible and silently produces `<unknown>` for
+# every frame, which is a much worse failure than a slow build.
+echo "→ building (pass 1: measure the image)"
+( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" >/dev/null )
+[ -f "$ELF" ] || { echo "error: no ELF at $ELF" >&2; exit 1; }
+
+eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export)"
+echo "  image_addr ${SENTRY_MICRO_IMAGE_ADDR}"
+echo "  image_size ${SENTRY_MICRO_IMAGE_SIZE}"
+export SENTRY_MICRO_IMAGE_ADDR SENTRY_MICRO_IMAGE_SIZE
+
+echo
+echo "→ building (pass 2: bake it in)"
 ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" )
 
-ELF="${REPO_ROOT}/${PROJECT_DIR}/.pio/build/${ENVIRONMENT}/firmware.elf"
-[ -f "$ELF" ] || { echo "error: no ELF at $ELF" >&2; exit 1; }
+# Adding the -D flags relinks, which can shift the layout. Re-measure and refuse to ship a
+# mismatch rather than uploading debug files that do not describe the binary.
+eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export | sed 's/SENTRY_MICRO_IMAGE/FINAL_IMAGE/')"
+if [ "$FINAL_IMAGE_ADDR" != "$SENTRY_MICRO_IMAGE_ADDR" ] || \
+   [ "$FINAL_IMAGE_SIZE" != "$SENTRY_MICRO_IMAGE_SIZE" ]; then
+    echo
+    echo "error: the image moved between passes." >&2
+    echo "       compiled in: ${SENTRY_MICRO_IMAGE_ADDR} +${SENTRY_MICRO_IMAGE_SIZE}" >&2
+    echo "       final ELF:   ${FINAL_IMAGE_ADDR} +${FINAL_IMAGE_SIZE}" >&2
+    echo "       Re-run; if it persists the build is not reproducible." >&2
+    exit 1
+fi
 
 # Use the toolchain objcopy that matches the target: an Xtensa ELF and a RISC-V one need
 # different binutils, and PlatformIO already installed whichever this env used.

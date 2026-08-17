@@ -64,6 +64,14 @@ void sentry_options_defaults(sentry_options_t *options)
      * stamps the ELF — so the firmware's claim and the uploaded file always agree. */
     options->build_id = SENTRY_BUILD_ID_HEX;
 #endif
+#ifdef SENTRY_IMAGE_ADDR
+    /* Read out of the linked ELF by the same script; see sentry_event_t::image_addr for
+     * why a wrong value here fails silently rather than loudly. */
+    options->image_addr = SENTRY_IMAGE_ADDR;
+#endif
+#ifdef SENTRY_IMAGE_SIZE
+    options->image_size = SENTRY_IMAGE_SIZE;
+#endif
 }
 
 void sentry_set_logger(sentry_logger_fn logger) { g_logger = logger; }
@@ -323,6 +331,7 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
     event->device = &g_state.device;
     event->build_id = g_state.options.build_id;
     event->image_addr = g_state.options.image_addr;
+    event->image_size = g_state.options.image_size;
 
     /* Sampled now rather than reused from init, so the numbers describe the moment the
      * event happened — which for a heap leak is the entire point. */

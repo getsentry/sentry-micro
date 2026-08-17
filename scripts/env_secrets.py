@@ -33,11 +33,16 @@ SECRETS = (
     # so the firmware reports the identical build-id that gets stamped into the ELF.
     ("SENTRY_MICRO_BUILD_ID", "SENTRY_BUILD_ID_HEX"),
     ("SENTRY_MICRO_RELEASE", "SENTRY_RELEASE"),
+    ("SENTRY_MICRO_IMAGE_ADDR", "SENTRY_IMAGE_ADDR"),
+    ("SENTRY_MICRO_IMAGE_SIZE", "SENTRY_IMAGE_SIZE"),
 )
 
 # Values that must never be echoed: the WiFi password, and the DSN (which embeds a key that
 # can write to the Sentry project). Build logs get pasted into issues and CI output.
 SENSITIVE = {"SENTRY_MICRO_WIFI_PASSWORD", "SENTRY_MICRO_DSN"}
+
+# Macros whose value is a number rather than a string literal.
+NUMERIC = {"SENTRY_IMAGE_ADDR", "SENTRY_IMAGE_SIZE"}
 
 defines = []
 for var, macro in SECRETS:
@@ -46,7 +51,11 @@ for var, macro in SECRETS:
         continue
     # StringifyMacro handles the quoting/escaping needed to survive the shell and the
     # compiler command line; hand-rolled \" escaping breaks on spaces in an SSID.
-    defines.append((macro, env.StringifyMacro(value)))  # noqa: F821
+    # Addresses go in as bare numeric literals; everything else is a quoted string.
+    if macro in NUMERIC:
+        defines.append((macro, value))
+    else:
+        defines.append((macro, env.StringifyMacro(value)))  # noqa: F821
     shown = "<set>" if var in SENSITIVE else value
     print("env_secrets: %s <- %s (%s)" % (macro, var, shown))
 

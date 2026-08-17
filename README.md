@@ -313,6 +313,15 @@ adds the note *after* linking as a **non-ALLOC** section instead: present in the
 must know its own build-id to report it, and a linker-computed one only exists after linking,
 so we choose the value and use it in both places.
 
+`image_addr` and `image_size` matter as much as the build-id, and fail more quietly. Sentry
+resolves an address by computing `instruction_addr - image_addr` and looking the result up
+against symbols normalised by the object's own load address — so `image_addr` must equal the
+ELF's lowest `PT_LOAD` address (`0x3f400020` on ESP32, *not* 0), and `image_size` is what
+decides which module a frame belongs to. Get either wrong and every frame renders as
+`<unknown>`: the event arrives, the addresses look right, and nothing says why. That is why
+`release.sh` builds twice — the values only exist once the ELF is linked, so the first pass
+measures and the second bakes them in, then re-measures and refuses to ship a mismatch.
+
 Each build variant gets its own id, derived from `release + env`. That is required, not
 cosmetic: every board in a matrix is a distinct binary, and resolving addresses against the
 wrong one produces confidently wrong function names.

@@ -105,13 +105,23 @@ typedef struct {
     const sentry_coredump_t *coredump;
 
     /**
-     * Address the image is loaded at, for computing addresses relative to it.
+     * Address the image is loaded at — the ELF's lowest `PT_LOAD` virtual address.
      *
-     * 0 for ESP32, which executes in place at fixed addresses with no relocation, so the
-     * addresses in the ELF are already the runtime ones. Kept configurable because that
-     * stops being true the moment anything relocates.
+     * Sentry computes `instruction_addr - image_addr` and looks the result up against
+     * symbols normalised by the object's own load address, so this must match the ELF or
+     * every frame resolves to `<unknown>`. Not 0: an ESP32 image does not start at 0, and
+     * "no relocation happens" is not the same as "the image is based at zero".
      */
     uint64_t image_addr;
+
+    /**
+     * Bytes the image spans, from `image_addr` to the end of its last loadable segment.
+     *
+     * Sentry decides which module a frame belongs to by testing it against this range. On
+     * ESP32 the span is large and sparse — flash rodata, DRAM, IRAM and flash text sit far
+     * apart in the address map — but it is the honest extent of the object.
+     */
+    uint64_t image_size;
 
     /* Sampled at event time rather than at boot, so they describe the moment. */
     uint32_t free_heap_bytes;

@@ -99,10 +99,14 @@ typedef struct {
     const char *build_id;
 
     /**
-     * Address the image is loaded at. 0 for ESP32, which executes in place at fixed
-     * addresses, so the addresses in the ELF are already the runtime ones.
+     * Where the firmware image is loaded and how far it extends.
+     *
+     * Both must match the ELF that was uploaded, or Sentry cannot map an address back to a
+     * function. Normally left unset: `scripts/release.sh` reads them out of the linked ELF
+     * and injects them, the same way it does the build-id.
      */
     uint64_t image_addr;
+    uint64_t image_size;
 
     /** When true, the SDK narrates what it is doing through the logger. Off in production. */
     bool debug;

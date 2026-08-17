@@ -40,3 +40,12 @@
   `debug_meta.images[]` with the matching `code_id`/`debug_id`.
 - Core dump reading: crashes are recovered on the next boot and reported as a Sentry
   `exception` with a stacktrace, symbolicated server-side against the uploaded ELF.
+- Relay protocol (`core/sentry_relay.*`): a generic, non-Sentry-specific framing for "perform
+  this HTTP request for me" over any link that carries short packets both ways. Host-tested
+  including reassembly at every awkward chunk size.
+- `RelayTransport`: reports through a companion app over BLE, serial or anything else, with no
+  Sentry knowledge required on the app side. Proven against ChromaBay's NimBLE service; the
+  app-side reference implementation is ~200 lines including the ingest-host whitelist.
+- Events carry the real `image_addr`/`image_size` read from the linked ELF, which is what
+  symbolication actually resolves against; `release.sh` now builds in two passes to obtain
+  them.
