@@ -519,6 +519,19 @@ Implemented today:
 
 Not done:
 
+- [ ] **`AutoTransport`** — pick a route per attempt: WiFi if the station is associated, else
+      the relay if a host is attached, else report `SEND_UNAVAILABLE` so the core buffers.
+      About 25 lines. The proposal specifies exactly this as SDK-level behaviour ("WiFi if
+      connected → else a registered relay → else buffer to flash and retry later"), and
+      `Transport::is_available()` exists to support it — it is documented as the hook the
+      auto-select logic uses to skip a dead transport without paying for a connect timeout.
+
+      It is currently hand-rolled twice: in ChromaBay's `esp32/src/sentry_reporting.h`, and
+      inline in `examples/wifi_basic`, which says in a comment that it is standing in for
+      this. Two copies of a routing rule is how they drift. Every adopter with more than one
+      transport needs the same object, so it belongs here rather than in each firmware.
+      (Raised by the ChromaBay side, who kept it local to avoid widening the SDK diff
+      mid-edit.)
 - [ ] **Breadcrumbs** — what the device was doing before it died
 - [ ] **Sessions / release health** — crash-free rate per release across a fleet
 - [ ] **WLED usermod** — the ready-made audience
