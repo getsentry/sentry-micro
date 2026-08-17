@@ -59,6 +59,64 @@ static void test_builds_the_auth_header(void)
     TEST_ASSERT_NULL(strstr(auth, "sentry_timestamp"));
 }
 
+static void test_recovers_org_id_from_the_host(void)
+{
+    sentry_dsn_t dsn;
+    TEST_ASSERT_TRUE(sentry_dsn_parse(&dsn, SENTRY_IO_DSN));
+    TEST_ASSERT_EQUAL_STRING("1234", dsn.org_id);
+
+    /* It is metadata for trace propagation, not routing — the URL must not change. */
+    char url[SENTRY_MICRO_MAX_URL_LEN];
+    sentry_dsn_envelope_url(&dsn, url, sizeof(url));
+    TEST_ASSERT_EQUAL_STRING("https://o1234.ingest.us.sentry.io/api/4507/envelope/", url);
+}
+
+static void test_leaves_org_id_empty_when_the_host_has_none(void)
+{
+    /* Absence is normal — self-hosted and custom ingest domains carry no `o<digits>.`. */
+    static const char *no_org[] = {
+        "https://key@sentry.io/1", /* no leading 'o' */
+        "https://key@example.com/1",
+        "https://key@o.ingest.sentry.io/1", /* 'o' but no digits */
+        "https://key@oabc.ingest.sentry.io/1", /* 'o' but not numeric */
+        "https://key@o12ab.ingest.sentry.io/1", /* partially numeric — must not pass */
+        "https://key@o1234/1", /* no dot at all */
+        "https://key@o123456789012345678901.ingest.sentry.io/1", /* 21 digits, > u64 */
+    };
+
+    for (size_t i = 0; i < sizeof(no_org) / sizeof(no_org[0]); i++) {
+        sentry_dsn_t dsn;
+        TEST_ASSERT_TRUE_MESSAGE(sentry_dsn_parse(&dsn, no_org[i]), no_org[i]);
+        /* An absent org id must not invalidate the DSN — events still send fine. */
+        TEST_ASSERT_TRUE(dsn.valid);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("", dsn.org_id, no_org[i]);
+    }
+}
+
+static void test_resolves_org_id_with_an_override(void)
+{
+    sentry_dsn_t dsn;
+    TEST_ASSERT_TRUE(sentry_dsn_parse(&dsn, SENTRY_IO_DSN));
+
+    /* Explicit configuration beats what the host implies. */
+    TEST_ASSERT_EQUAL_STRING("999", sentry_dsn_resolve_org_id(&dsn, "999"));
+    /* An unset or blank override falls through to the DSN. */
+    TEST_ASSERT_EQUAL_STRING("1234", sentry_dsn_resolve_org_id(&dsn, NULL));
+    TEST_ASSERT_EQUAL_STRING("1234", sentry_dsn_resolve_org_id(&dsn, ""));
+
+    /* Self-hosted: nothing in the host, so the override is the only source. */
+    sentry_dsn_t self_hosted;
+    TEST_ASSERT_TRUE(sentry_dsn_parse(&self_hosted, "https://key@sentry.example.com/1"));
+    TEST_ASSERT_EQUAL_STRING("42", sentry_dsn_resolve_org_id(&self_hosted, "42"));
+    TEST_ASSERT_EQUAL_STRING("", sentry_dsn_resolve_org_id(&self_hosted, NULL));
+
+    /* Never NULL, even with nothing to go on. */
+    sentry_dsn_t bad;
+    sentry_dsn_parse(&bad, "garbage");
+    TEST_ASSERT_EQUAL_STRING("", sentry_dsn_resolve_org_id(&bad, NULL));
+    TEST_ASSERT_EQUAL_STRING("", sentry_dsn_resolve_org_id(NULL, NULL));
+}
+
 static void test_parses_explicit_port_and_plain_http(void)
 {
     sentry_dsn_t dsn;
@@ -163,6 +221,9 @@ int main(void)
     RUN_TEST(test_parses_a_sentry_io_dsn);
     RUN_TEST(test_builds_the_envelope_url);
     RUN_TEST(test_builds_the_auth_header);
+    RUN_TEST(test_recovers_org_id_from_the_host);
+    RUN_TEST(test_leaves_org_id_empty_when_the_host_has_none);
+    RUN_TEST(test_resolves_org_id_with_an_override);
     RUN_TEST(test_parses_explicit_port_and_plain_http);
     RUN_TEST(test_parses_self_hosted_path_prefix);
     RUN_TEST(test_drops_the_legacy_secret_key);

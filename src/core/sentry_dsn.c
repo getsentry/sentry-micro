@@ -37,6 +37,44 @@ static bool parse_port(const char *src, size_t len, uint16_t *out)
     return true;
 }
 
+/**
+ * Recover the org id from an `o<digits>.<rest>` host, writing "" when there is none.
+ *
+ * Absence is normal, not an error: self-hosted instances and custom ingest domains have
+ * no such prefix.
+ *
+ * Stricter than sentry-native's equivalent, which validates with `strtoull` and therefore
+ * accepts a leading-numeric host like `o12ab.…` as org "12ab" (strtoull stops at 'a' and
+ * returns non-zero, so its "did it consume everything" check does not fire). Here every
+ * character must be a digit. Both agree on every real DSN; we just fail closed rather
+ * than inventing an org id from a host that merely starts with a digit.
+ */
+static void parse_org_id(sentry_dsn_t *out)
+{
+    out->org_id[0] = '\0';
+
+    if (out->host[0] != 'o') {
+        return;
+    }
+    const char *dot = strchr(out->host, '.');
+    if (!dot) {
+        return;
+    }
+
+    const char *digits = out->host + 1;
+    size_t len = (size_t)(dot - digits);
+    if (len == 0 || len >= sizeof(out->org_id)) {
+        return;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (digits[i] < '0' || digits[i] > '9') {
+            return;
+        }
+    }
+    memcpy(out->org_id, digits, len);
+    out->org_id[len] = '\0';
+}
+
 bool sentry_dsn_parse(sentry_dsn_t *out, const char *dsn)
 {
     if (!out) {
@@ -136,8 +174,21 @@ bool sentry_dsn_parse(sentry_dsn_t *out, const char *dsn)
         }
     }
 
+    parse_org_id(out);
+
     out->valid = true;
     return true;
+}
+
+const char *sentry_dsn_resolve_org_id(const sentry_dsn_t *dsn, const char *override)
+{
+    if (override && override[0] != '\0') {
+        return override;
+    }
+    if (dsn && dsn->valid) {
+        return dsn->org_id;
+    }
+    return "";
 }
 
 size_t sentry_dsn_envelope_url(const sentry_dsn_t *dsn, char *buf, size_t buf_len)

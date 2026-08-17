@@ -104,6 +104,8 @@ const char *envelope_url() { return g_state.envelope_url; }
 
 const char *auth_header() { return g_state.auth_header; }
 
+const char *org_id() { return sentry_dsn_resolve_org_id(&g_state.dsn, g_state.options.org_id); }
+
 const sentry_device_info_t &device_info() { return g_state.device; }
 
 const Options &options() { return g_state.options; }

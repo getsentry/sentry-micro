@@ -57,6 +57,15 @@ struct Options {
     /** Free-form board/hardware identifier attached as a tag, e.g. `"m5-atoms3"`. */
     const char *board = nullptr;
 
+    /**
+     * Organization id, for trace propagation and the Dynamic Sampling Context.
+     *
+     * Normally left unset: it is recovered automatically from an `o<digits>.` DSN host.
+     * Set it when your ingest host carries no such prefix — self-hosted Sentry, or a
+     * custom ingest domain — where it cannot be inferred. Takes precedence over the DSN.
+     */
+    const char *org_id = nullptr;
+
     /** When true, the SDK narrates what it is doing to `Serial`. Off in production. */
     bool debug = false;
 };
@@ -91,6 +100,12 @@ const char *envelope_url();
 
 /** Value for the `X-Sentry-Auth` header. "" if disabled. */
 const char *auth_header();
+
+/**
+ * Effective organization id — the `org_id` option if set, else the one recovered from the
+ * DSN host, else "". Never NULL.
+ */
+const char *org_id();
 
 /** This boot's device facts. Populated by `init()`; zeroed before that. */
 const sentry_device_info_t &device_info();

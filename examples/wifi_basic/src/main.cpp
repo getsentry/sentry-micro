@@ -83,6 +83,8 @@ static void print_sentry_state()
     Serial.printf("release       : %s\n", FIRMWARE_RELEASE);
     Serial.printf("ingest host   : %s (tls: %s)\n", dsn.host, dsn.is_secure ? "yes" : "no");
     Serial.printf("project       : %s\n", dsn.project_id);
+    /* Empty on self-hosted or a custom ingest domain — set Options::org_id there. */
+    Serial.printf("org           : %s\n", sentry::org_id()[0] ? sentry::org_id() : "(unknown)");
     Serial.printf("envelope url  : %s\n", sentry::envelope_url());
     Serial.printf("auth header   : %s\n", sentry::auth_header());
     Serial.println("── device ────────────────────────────────────");

@@ -6,6 +6,10 @@
 
 - Initial project scaffold: portable core, ESP32 device context, transport interface.
 - DSN parsing with ingest-URL and `X-Sentry-Auth` construction, covered by host unit tests.
+- Org id recovered from an `o<digits>.` DSN host, with an `Options::org_id` override for
+  self-hosted instances and custom ingest domains.
+- `Transport::send()` returns a `Response` struct (result, HTTP status, retry-after) rather
+  than a bare enum, so rate-limit handling has somewhere to land.
 - Device context: chip model/revision/cores, eFuse-derived device id, flash size, heap,
   ESP-IDF version, and `esp_reset_reason()` mapped to a stable set of Sentry reset reasons.
 - PlatformIO packaging (`library.json`, `library.properties`) plus a reference partition

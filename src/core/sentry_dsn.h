@@ -38,6 +38,16 @@ typedef struct {
     char path[SENTRY_MICRO_MAX_PATH_LEN];
     /** Numeric project id (kept as a string; it is only ever concatenated). */
     char project_id[SENTRY_MICRO_MAX_PROJECT_ID_LEN];
+    /**
+     * Organization id, recovered from an `o<digits>.` host prefix — `o1234.ingest.…`
+     * yields `"1234"`. Empty when the host does not carry one (self-hosted, or a custom
+     * ingest domain), which is not an error.
+     *
+     * This does *not* affect where events are sent. It rides along in the trace header
+     * and the Dynamic Sampling Context, where it lets Sentry tell "this incoming trace
+     * belongs to my org" from "this one is someone else's".
+     */
+    char org_id[SENTRY_MICRO_MAX_ORG_ID_LEN];
     /** Explicit port, or 0 when the DSN did not specify one (use the scheme default). */
     uint16_t port;
 } sentry_dsn_t;
@@ -72,6 +82,17 @@ size_t sentry_dsn_envelope_url(const sentry_dsn_t *dsn, char *buf, size_t buf_le
  * Returns the number of bytes written (excluding the NUL), or 0 on failure.
  */
 size_t sentry_dsn_auth_header(const sentry_dsn_t *dsn, char *buf, size_t buf_len);
+
+/**
+ * Resolve the effective org id, given an optional explicit override.
+ *
+ * `override` wins when it is non-NULL and non-empty; otherwise the value recovered from
+ * the DSN host is used. This matters for self-hosted and custom-domain setups, where the
+ * host carries no `o<digits>.` prefix and the org id can only be configured by hand.
+ *
+ * Never returns NULL — the result is `""` when nothing is known.
+ */
+const char *sentry_dsn_resolve_org_id(const sentry_dsn_t *dsn, const char *override);
 
 #ifdef __cplusplus
 }

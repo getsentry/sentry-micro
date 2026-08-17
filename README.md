@@ -111,6 +111,79 @@ void setup() {
 half-configured. Crash reporting must never be load-bearing: a firmware should always be able
 to ignore that return value and carry on.
 
+## Writing a transport
+
+Everything Sentry-specific has already happened by the time a transport is called: it gets a
+URL, two headers, and a byte buffer. A complete implementation is a POST and a status check.
+
+```cpp
+class MyTransport : public sentry::Transport {
+public:
+    sentry::Response send(const char *url, const sentry::Headers &h,
+                          const uint8_t *body, size_t len) override {
+        if (!my_post(url, h.auth, h.content_type, body, len)) {
+            return sentry::SEND_UNAVAILABLE;   // core buffers and retries
+        }
+        return sentry::SEND_OK;
+    }
+    const char *name() const override { return "mine"; }
+};
+```
+
+`send()` returns a `Response` struct, but a `SendResult` converts implicitly, so a transport
+that only knows "it worked" writes the line above. A transport that *can* see response
+headers should fill in more, because the core cannot invent it:
+
+```cpp
+return sentry::Response(sentry::SEND_RATE_LIMITED, 429, retry_after_seconds * 1000);
+```
+
+The struct exists so that new response facts can be added without changing a signature every
+transport implements — new fields carry defaults, so existing transports keep compiling.
+
+`send()` may block. The core never calls it from `loop()` behind your back; see
+[Delivery model](#delivery-model) for what that means in practice.
+
+## Delivery model
+
+`Transport::send()` is **blocking**, and the queuing/retry/backoff that makes blocking safe
+lives in the core, above it. The alternative — an async transport interface with a completion
+callback — pushes a task, a queue, and a buffer-ownership problem into every transport anyone
+ever writes, to solve a problem that only has to be solved once.
+
+What blocking actually costs on ESP32, measured against the Arduino core's own sdkconfig
+rather than folklore:
+
+| | Value | Consequence |
+| --- | --- | --- |
+| `CONFIG_ESP_TASK_WDT_TIMEOUT_S` | 5 | |
+| `CONFIG_ESP_TASK_WDT_PANIC` | 1 | a watchdog timeout **reboots**, it does not just log |
+| `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0` | set on ESP32/S3, **unset** on C3/S2 | |
+| `CONFIG_ARDUINO_RUNNING_CORE` | 1 on ESP32/S3, 0 on C3/S2 | |
+| `CONFIG_ARDUINO_LOOP_STACK_SIZE` | 8192 | the whole budget for a TLS handshake in `loop()` |
+
+Reading those together: on dual-core parts the task watchdog watches the **CPU0** idle task
+while `loop()` runs on **core 1**, and on single-core parts the idle task is not subscribed at
+all. So a blocking `send()` in `loop()` does **not** trip the task watchdog out of the box on
+any supported target. The real costs are different, and both are ordinary rather than dramatic:
+
+1. **A multi-second stall in `loop()`.** A TLS POST is comfortably 2–5 s. On an LED controller
+   that is a visible freeze — which is exactly why this belongs on its own task by default for
+   anything with a render loop.
+2. **Stack.** An mbedTLS handshake wants several KB, out of `loop()`'s 8 KB. It usually fits;
+   it is tight, and a stack overflow is a panic.
+
+The watchdog does become real in two cases: firmware that subscribes its own loop task
+(`esp_task_wdt_add(NULL)`), and a handshake that starves a *subscribed* idle task. If it fires,
+`TASK_WDT_PANIC=1` means a reboot — which this SDK would then dutifully report as a
+`task_wdt` reset. Funny, but not a good look.
+
+The upshot is that timing matters more than the interface. Boot-time crash reporting — read the
+previous reset reason, send, carry on — can block freely, because nothing is animating yet. A
+`capture_message()` from a render loop cannot. So the core will offer both: inline send
+(default, no extra task, correct for the boot path) and an opt-in worker task for firmware that
+cannot stall. A transport author writes the same ten lines either way.
+
 ## Supported targets
 
 Every ESP32 family that runs the Arduino framework and has a WiFi radio:
@@ -153,6 +226,8 @@ RISC-V or single-core builds fails there rather than on someone's bench.
 Implemented today:
 
 - [x] DSN parsing → ingest URL + `X-Sentry-Auth` header, host-tested
+- [x] Org id recovered from the DSN host, with an `Options::org_id` override for
+      self-hosted (for trace propagation / the Dynamic Sampling Context)
 - [x] Device context: chip model/revision/cores, eFuse device id, flash, heap, IDF version
 - [x] `esp_reset_reason()` mapped to stable Sentry reset reasons, with a crash/not-crash split
 - [x] Transport interface

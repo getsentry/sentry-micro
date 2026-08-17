@@ -31,6 +31,8 @@
 #define SENTRY_MICRO_MAX_KEY_LEN 64
 #define SENTRY_MICRO_MAX_PATH_LEN 64
 #define SENTRY_MICRO_MAX_PROJECT_ID_LEN 24
+/* Org ids are u64 in Relay: 20 digits plus the terminator. */
+#define SENTRY_MICRO_MAX_ORG_ID_LEN 21
 /* Ingest URL + the `X-Sentry-Auth` header value, both built once at init. */
 #define SENTRY_MICRO_MAX_URL_LEN 320
 #define SENTRY_MICRO_MAX_AUTH_LEN 256

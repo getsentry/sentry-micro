@@ -41,6 +41,46 @@ enum SendResult {
     SEND_ERROR = -4,
 };
 
+/**
+ * What a transport reports back about one delivery attempt.
+ *
+ * A struct rather than a bare `SendResult` so that the interface can learn new facts about
+ * a response — rate-limit categories, a server-supplied event id — without changing a
+ * signature every transport implements. New fields get a default, so existing transports
+ * keep compiling and simply leave them unset.
+ *
+ * Everything beyond `result` is optional. A transport that knows nothing but "it worked"
+ * returns `SEND_OK` and is a complete, correct implementation; the conversion below makes
+ * that a plain `return SEND_OK;`. The core treats unset fields as "no information" and
+ * falls back to its own backoff policy rather than assuming zero means anything.
+ */
+struct Response {
+    /** The outcome. The only field a transport must set. */
+    SendResult result = SEND_ERROR;
+
+    /** HTTP status if a server actually answered, else 0 (DNS/TLS/socket failure). */
+    uint16_t http_status = 0;
+
+    /**
+     * How long to hold off before retrying, in milliseconds; 0 means "not stated".
+     *
+     * Comes from `Retry-After` or `X-Sentry-Rate-Limits` on a 429. Honouring it is not
+     * politeness — a device in a boot loop that ignores it will hammer ingest with the
+     * same crash forever, and get the project rate-limited for everyone.
+     */
+    uint32_t retry_after_ms = 0;
+
+    Response() = default;
+
+    /* Implicit on purpose: it is what lets a minimal transport `return SEND_OK;`. */
+    Response(SendResult result_, uint16_t http_status_ = 0, uint32_t retry_after_ms_ = 0)
+        : result(result_)
+        , http_status(http_status_)
+        , retry_after_ms(retry_after_ms_)
+    {
+    }
+};
+
 class Transport {
 public:
     virtual ~Transport() = default;
@@ -48,11 +88,20 @@ public:
     /**
      * Deliver `len` bytes of envelope `body` to `url`.
      *
-     * Must not block indefinitely and must not allocate on the failure path — this can
-     * be called from a post-crash context where the heap is not trustworthy.
+     * May block: the core calls this from a context where blocking is acceptable, never
+     * from `loop()` behind the caller's back. It must not allocate on the failure path —
+     * this can run after a crash, where the heap is not trustworthy.
+     *
+     * A minimal implementation is a POST and a status check:
+     *
+     *     Response send(const char *url, const Headers &h,
+     *                   const uint8_t *body, size_t len) override {
+     *         if (!post(url, h, body, len)) { return SEND_UNAVAILABLE; }
+     *         return SEND_OK;
+     *     }
      */
-    virtual SendResult send(
-        const char *url, const Headers &headers, const uint8_t *body, size_t len) = 0;
+    virtual Response send(const char *url, const Headers &headers, const uint8_t *body, size_t len)
+        = 0;
 
     /**
      * Cheap, non-blocking "is there any point calling send() right now?".
