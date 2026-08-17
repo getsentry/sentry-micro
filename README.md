@@ -551,6 +551,13 @@ Built but never exercised on hardware, which is worth knowing before trusting th
 New to the project? [ONBOARDING.md](ONBOARDING.md) covers hardware, first event, first
 symbolicated crash, and the traps that are not obvious — several of which fail silently.
 
+Work is tracked in Linear:
+[**sentry-micro**](https://linear.app/getsentry/project/sentry-micro-405057c524d4). Start with
+[SDK-1407](https://linear.app/getsentry/issue/SDK-1407), which walks you from a clone to a
+symbolicated crash on your own board before you change anything. The `Not done` list above is
+a summary; Linear is the source of truth, and each issue carries the reasoning and the known
+obstacles rather than just a title.
+
 ## Contributing
 
 This is a prototype and the API will change. If you want ESP32 support in Sentry, the most
