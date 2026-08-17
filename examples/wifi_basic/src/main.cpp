@@ -6,10 +6,10 @@
  * POST to, the auth header it will send, and why the chip came up (poweron? panic?
  * brownout? watchdog?).
  *
- * It also builds the envelope this boot would send and prints it verbatim. Nothing is
- * delivered yet — the transport is the next milestone — but what gets printed is the exact
- * ndjson that will be POSTed, so the wire format is checkable on real hardware and not only
- * in the host tests.
+ * It then builds an event describing this boot, prints the envelope verbatim, and POSTs it
+ * to Sentry over WiFi. Printing as well as sending is deliberate: ingest answers `200`
+ * without telling the device what it accepted, so having the exact bytes on the console is
+ * what makes a rejected or silently-dropped event diagnosable.
  *
  * Setup:
  *   cp src/secrets.example.h src/secrets.h   # then edit it
@@ -20,6 +20,7 @@
 #include <WiFi.h>
 
 #include <sentry_micro.h>
+#include <transport/sentry_transport_wifi.hpp>
 
 /* Local, gitignored credentials. Absent in CI, where the values come from -D flags. */
 #if __has_include("secrets.h")
@@ -42,7 +43,20 @@
 /* Identifies this build in Sentry, and is what debug files must be uploaded against. */
 #define FIRMWARE_RELEASE "sentry-micro-example@" SENTRY_MICRO_VERSION
 
+/* Attached as a tag, so a fleet of mixed hardware stays separable in the issue stream.
+ * PlatformIO defines BOARD for every env, which is exactly the identifier we want. */
+#ifndef BOARD_NAME
+#    ifdef ARDUINO_BOARD
+#        define BOARD_NAME ARDUINO_BOARD
+#    else
+#        define BOARD_NAME "unknown"
+#    endif
+#endif
+
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+
+/* File scope, not a local: the SDK stores a pointer to it, so it has to outlive setup(). */
+static sentry::WiFiTransport transport;
 
 /**
  * List what the radio can actually see.
@@ -154,14 +168,32 @@ static void print_sentry_state()
     Serial.println();
 }
 
+/** Human-readable name for a delivery result, for the serial log. */
+static const char *send_result_name(sentry_send_result_t result)
+{
+    switch (result) {
+    case SENTRY_SEND_OK:
+        return "delivered";
+    case SENTRY_SEND_UNAVAILABLE:
+        return "no route (buffer and retry)";
+    case SENTRY_SEND_REJECTED:
+        return "rejected (do not retry)";
+    case SENTRY_SEND_RATE_LIMITED:
+        return "rate limited";
+    case SENTRY_SEND_ERROR:
+    default:
+        return "error";
+    }
+}
+
 /**
- * Build the envelope this boot would send, and print it.
+ * Build the envelope describing this boot, print it, and send it.
  *
- * There is no transport yet, so this is the end of the line — but it is the whole payload,
- * byte for byte, that will eventually be POSTed to the ingest URL above. Printing it means
- * the wire format is verifiable on real hardware rather than only in the host tests.
+ * Printing the bytes as well as sending them is deliberate: when ingest answers 200 the
+ * device learns nothing about *what* it sent, so having the exact payload on the console
+ * is what makes a rejected or silently-dropped event diagnosable.
  */
-static void print_boot_envelope()
+static void report_boot()
 {
     char event_id[SENTRY_MICRO_EVENT_ID_LEN];
     sentry_event_t event;
@@ -194,6 +226,18 @@ static void print_boot_envelope()
     Serial.printf("── envelope (%u bytes) ───────────────────────\n", (unsigned)needed);
     Serial.print(envelope);
     Serial.println("──────────────────────────────────────────────");
+
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+    Serial.printf(
+        "[sentry] %s (http %u", send_result_name(response.result), (unsigned)response.http_status);
+    if (response.retry_after_ms > 0) {
+        Serial.printf(", retry after %ums", (unsigned)response.retry_after_ms);
+    }
+    Serial.println(")");
+
+    if (response.result == SENTRY_SEND_OK) {
+        Serial.printf("[sentry] event %s is in Sentry\n", event_id);
+    }
 }
 
 void setup()
@@ -216,6 +260,7 @@ void setup()
     options.dsn = SENTRY_DSN;
     options.release = FIRMWARE_RELEASE;
     options.environment = "development";
+    options.board = BOARD_NAME;
     options.debug = SENTRY_MICRO_DEBUG;
 
     if (!sentry::init(options)) {
@@ -224,9 +269,21 @@ void setup()
         Serial.println("[sentry] init failed — check SENTRY_DSN in src/secrets.h");
     }
 
+    /* The transport only needs registering once. It refuses any host but the DSN's, so
+     * there is nothing to configure for that. For production, also call
+     * transport.set_ca_cert() — see the header for why it is not on by default. */
+    sentry::set_transport(transport);
+
     print_sentry_state();
-    print_boot_envelope();
-    connect_wifi();
+
+    /* Reporting needs the radio up, so this has to follow the connect rather than lead it.
+     * A real firmware would buffer the event instead and flush it when a route appears;
+     * that buffer is the next milestone. */
+    if (connect_wifi()) {
+        report_boot();
+    } else {
+        Serial.println("[sentry] no network — nothing to send over yet");
+    }
 }
 
 void loop()

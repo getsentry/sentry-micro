@@ -130,6 +130,25 @@ void sentry_set_transport(const sentry_transport_t *transport)
 
 const sentry_transport_t *sentry_get_transport(void) { return g_state.transport; }
 
+sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
+{
+    if (!g_state.enabled || !envelope || len == 0) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+
+    sentry_headers_t headers;
+    headers.auth = g_state.auth_header;
+    headers.content_type = "application/x-sentry-envelope";
+
+    sentry_response_t response
+        = sentry_transport_send(g_state.transport, g_state.envelope_url, &headers, envelope, len);
+
+    debug_log("sent %u bytes via %s: result %d, http %u", (unsigned)len,
+        sentry_transport_name(g_state.transport), (int)response.result,
+        (unsigned)response.http_status);
+    return response;
+}
+
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
 {
     if (!event || !event_id_buf) {

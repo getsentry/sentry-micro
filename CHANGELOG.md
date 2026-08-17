@@ -21,3 +21,6 @@
 - PlatformIO packaging (`library.json`, `library.properties`) plus a reference partition
   table that includes the `coredump` partition the stock Arduino tables omit.
 - `wifi_basic` example, building on ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and (opt-in) ESP32-C6.
+- `WiFiTransport`: HTTPS POST straight to ingest, refusing any host but the DSN's (exact
+  match, no redirects), with `Retry-After` / `X-Sentry-Rate-Limits` translated into a
+  backoff the core can act on.

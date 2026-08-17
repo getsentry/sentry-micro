@@ -137,6 +137,50 @@ sentry_init(&options);
 Crash reporting must never be load-bearing: a firmware should always be able to ignore that
 return value and carry on.
 
+## WiFi transport
+
+For a device on WiFi, this is all of it:
+
+```cpp
+#include <sentry_micro.h>
+#include <transport/sentry_transport_wifi.hpp>
+
+static sentry::WiFiTransport transport;   // file scope — the SDK stores a pointer
+
+void setup() {
+    sentry::Options options;
+    options.dsn = "https://<key>@<org>.ingest.sentry.io/<project>";
+    sentry::init(options);
+    sentry::set_transport(transport);
+}
+```
+
+It refuses to POST to any host but the one in your DSN, with no configuration — matching is
+exact, so `evil-sentry.io`, `sentry.io.evil.com` and `https://sentry.io@evil.com/` are all
+rejected, and redirects are disabled so a `302` cannot move the auth header somewhere else.
+
+**TLS verification is off by default.** The connection is encrypted but *unauthenticated*
+until you supply a root:
+
+```cpp
+transport.set_ca_cert(ISRG_ROOT_X1_PEM);
+```
+
+That is not a default because pinning a root that later expires bricks reporting on every
+deployed device simultaneously, and a maker with no CI has no way to push a new one. The
+trade belongs to whoever ships the firmware, so the SDK makes it explicit and logs a warning
+the first time it sends without one.
+
+**Do not call a TLS transport from a panic handler.** mbedTLS allocates several KB during a
+handshake and the heap is exactly what you cannot trust right after a crash. The design does
+not need it to: a crash is detected on the *next* boot from the reset reason and the coredump
+partition, then reported from normal runtime. That is why the no-allocation rule is stated
+for the core and not for transports.
+
+Footprint on `esp32dev` with the WiFi transport, TLS and the full example:
+**923,937 bytes flash** (50% of a 1.75 MB OTA slot) and **47,836 bytes RAM** (15% of 320 KB).
+mbedTLS dominates both.
+
 ## Writing a transport
 
 Everything Sentry-specific has already happened by the time a transport is called: it gets a
@@ -284,9 +328,10 @@ Implemented today:
       verified byte-for-byte on an ESP32-PICO-D4
 - [x] Packaging + all-variant build
 
-Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
+- [x] `WiFiTransport` — HTTPS POST straight to ingest, host-whitelisted against the DSN
+- [x] Envelope accepted by production ingest (`HTTP 200`, event id echoed back)
 
-- [ ] `WiFiTransport` — HTTPS POST straight to ingest
+Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
 - [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication
 - [ ] `RelayTransport` + the generic BLE relay protocol (host-whitelisted to the DSN host)
 - [ ] Offline ring buffer in NVS, rate limiting, `429`/`Retry-After` backoff

@@ -94,6 +94,20 @@ size_t sentry_dsn_auth_header(const sentry_dsn_t *dsn, char *buf, size_t buf_len
  */
 const char *sentry_dsn_resolve_org_id(const sentry_dsn_t *dsn, const char *override);
 
+/**
+ * True when the host component of `url` is exactly `host`, compared case-insensitively.
+ *
+ * This is a security check, not a convenience. Every transport must refuse to POST
+ * anywhere but the configured ingest host: the relay transport asks a *phone* to make the
+ * request on the device's behalf, so without this a buggy or hostile device turns its
+ * companion app into an open proxy. The WiFi transport applies the same rule so the
+ * guarantee does not depend on which transport happens to be selected.
+ *
+ * Matching is exact — no suffix matching. `evil-sentry.io` must not pass for `sentry.io`,
+ * and neither must `sentry.io.evil.com`.
+ */
+bool sentry_url_host_matches(const char *url, const char *host);
+
 #ifdef __cplusplus
 }
 #endif

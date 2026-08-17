@@ -215,9 +215,58 @@ static void test_output_helpers_refuse_an_invalid_dsn(void)
     TEST_ASSERT_EQUAL_STRING("", tiny);
 }
 
+static void test_matches_a_url_host_exactly(void)
+{
+    TEST_ASSERT_TRUE(sentry_url_host_matches("https://sentry.io/api/1/envelope/", "sentry.io"));
+    TEST_ASSERT_TRUE(sentry_url_host_matches("http://sentry.io:9000/api/1/envelope/", "sentry.io"));
+    /* Hostnames are case-insensitive. */
+    TEST_ASSERT_TRUE(sentry_url_host_matches("https://SenTry.IO/api/1/", "sentry.io"));
+    /* No path at all is still a valid host to compare. */
+    TEST_ASSERT_TRUE(sentry_url_host_matches("https://sentry.io", "sentry.io"));
+}
+
+static void test_rejects_hosts_that_merely_resemble_the_target(void)
+{
+    /* Each of these would pass a sloppy prefix/suffix/substring comparison. A transport
+     * that accepted any of them would POST a device's data to someone else's server — and
+     * for the relay transport, would make a user's phone do it. */
+    static const char *hostile[] = {
+        "https://evil-sentry.io/api/1/", /* prefix trick */
+        "https://sentry.io.evil.com/api/1/", /* suffix trick */
+        "https://notsentry.io/api/1/",
+        "https://sentry.i/api/1/", /* shorter */
+        "https://sentry.ioo/api/1/", /* longer */
+        "https://sentry.io@evil.com/api/1/", /* userinfo: real host is evil.com */
+        "https://user:pass@evil.com/sentry.io", /* userinfo again */
+        "sentry.io/api/1/", /* no scheme */
+        "", /* empty */
+    };
+    for (size_t i = 0; i < sizeof(hostile) / sizeof(hostile[0]); i++) {
+        TEST_ASSERT_FALSE_MESSAGE(sentry_url_host_matches(hostile[i], "sentry.io"), hostile[i]);
+    }
+
+    TEST_ASSERT_FALSE(sentry_url_host_matches(NULL, "sentry.io"));
+    TEST_ASSERT_FALSE(sentry_url_host_matches("https://sentry.io/", NULL));
+    TEST_ASSERT_FALSE(sentry_url_host_matches("https://sentry.io/", ""));
+}
+
+static void test_matches_the_host_from_a_parsed_dsn(void)
+{
+    /* The whole point: what the DSN says and what a transport is allowed to reach agree. */
+    sentry_dsn_t dsn;
+    TEST_ASSERT_TRUE(sentry_dsn_parse(&dsn, SENTRY_IO_DSN));
+
+    char url[SENTRY_MICRO_MAX_URL_LEN];
+    sentry_dsn_envelope_url(&dsn, url, sizeof(url));
+    TEST_ASSERT_TRUE(sentry_url_host_matches(url, dsn.host));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_matches_a_url_host_exactly);
+    RUN_TEST(test_rejects_hosts_that_merely_resemble_the_target);
+    RUN_TEST(test_matches_the_host_from_a_parsed_dsn);
     RUN_TEST(test_parses_a_sentry_io_dsn);
     RUN_TEST(test_builds_the_envelope_url);
     RUN_TEST(test_builds_the_auth_header);

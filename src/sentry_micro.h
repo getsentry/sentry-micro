@@ -179,6 +179,16 @@ const sentry_transport_t *sentry_get_transport(void);
  */
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
 
+/**
+ * Deliver a fully-built envelope through the registered transport.
+ *
+ * Fills in the ingest URL and the auth header from SDK state, so callers never assemble
+ * either by hand — the transport is handed exactly what it needs and nothing it could get
+ * wrong. Returns `SENTRY_SEND_UNAVAILABLE` when the SDK is disabled or no transport is
+ * attached, which is the same "buffer it and retry" signal a downed radio produces.
+ */
+sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len);
+
 #ifdef __cplusplus
 } /* extern "C" */
 

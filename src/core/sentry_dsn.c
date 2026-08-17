@@ -180,6 +180,47 @@ bool sentry_dsn_parse(sentry_dsn_t *out, const char *dsn)
     return true;
 }
 
+static char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
+
+bool sentry_url_host_matches(const char *url, const char *host)
+{
+    if (!url || !host || host[0] == '\0') {
+        return false;
+    }
+
+    /* Skip the scheme. Anything without "://" is not a URL we are willing to post to. */
+    const char *cursor = strstr(url, "://");
+    if (!cursor) {
+        return false;
+    }
+    cursor += 3;
+
+    /* Reject userinfo outright rather than trying to parse past it. `https://sentry.io@evil.com/`
+     * has host `evil.com`, and a naive parser reading up to the first '/' would see
+     * `sentry.io@evil.com` and could be fooled by a prefix comparison. Our ingest URLs never
+     * contain userinfo — the key travels in the auth header — so refusing is free. */
+    for (const char *p = cursor; *p && *p != '/'; p++) {
+        if (*p == '@') {
+            return false;
+        }
+    }
+
+    /* The host runs to the port separator, the path, or the end of the string. */
+    size_t len = 0;
+    while (cursor[len] && cursor[len] != '/' && cursor[len] != ':') {
+        len++;
+    }
+    if (len == 0 || strlen(host) != len) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (lower(cursor[i]) != lower(host[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 const char *sentry_dsn_resolve_org_id(const sentry_dsn_t *dsn, const char *override)
 {
     if (override && override[0] != '\0') {
