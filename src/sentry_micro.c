@@ -129,3 +129,39 @@ void sentry_set_transport(const sentry_transport_t *transport)
 }
 
 const sentry_transport_t *sentry_get_transport(void) { return g_state.transport; }
+
+bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
+{
+    if (!event || !event_id_buf) {
+        return false;
+    }
+    memset(event, 0, sizeof(*event));
+
+    if (!g_state.enabled) {
+        return false;
+    }
+
+    uint8_t random_bytes[16];
+    if (!sentry_device_random(random_bytes, sizeof(random_bytes))) {
+        /* Without a unique id a boot loop would report the same event over and over,
+         * be deduplicated into one issue, and hide the very frequency that matters. */
+        debug_log("no entropy for an event id; dropping event");
+        return false;
+    }
+    sentry_event_id_format(event_id_buf, random_bytes);
+
+    event->event_id = event_id_buf;
+    event->level = SENTRY_LEVEL_ERROR;
+    event->release = g_state.options.release;
+    event->environment = g_state.options.environment;
+    event->board = g_state.options.board;
+    event->device = &g_state.device;
+
+    /* Sampled now rather than reused from init, so the numbers describe the moment the
+     * event happened — which for a heap leak is the entire point. */
+    event->timestamp = sentry_device_unix_time();
+    event->free_heap_bytes = sentry_device_free_heap();
+    event->min_free_heap_bytes = sentry_device_min_free_heap();
+    event->uptime_ms = sentry_device_uptime_ms();
+    return true;
+}

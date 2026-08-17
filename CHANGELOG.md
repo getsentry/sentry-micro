@@ -10,6 +10,12 @@
   self-hosted instances and custom ingest domains.
 - `Transport::send()` returns a `Response` struct (result, HTTP status, retry-after) rather
   than a bare enum, so rate-limit handling has somewhere to land.
+- The whole public API is C, with C++ as an inline wrapper — usable from an ESP-IDF
+  component with no C++ runtime.
+- Fixed-buffer JSON writer and envelope/event builder, with no allocation anywhere on the
+  reporting path. Verified on a host and byte-for-byte on an ESP32-PICO-D4.
+- `scripts/env_secrets.py`: WiFi credentials and DSN come from `SENTRY_MICRO_*` environment
+  variables, so nothing sensitive needs to exist in a file.
 - Device context: chip model/revision/cores, eFuse-derived device id, flash size, heap,
   ESP-IDF version, and `esp_reset_reason()` mapped to a stable set of Sentry reset reasons.
 - PlatformIO packaging (`library.json`, `library.properties`) plus a reference partition

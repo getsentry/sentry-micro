@@ -2,12 +2,14 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 
@@ -38,6 +40,15 @@
 #    define SENTRY_CHIP_MODEL "ESP32-P4"
 #else
 #    define SENTRY_CHIP_MODEL "ESP32-unknown"
+#endif
+
+/* Xtensa on the original line and the S-series; RISC-V on everything from the C-series on.
+ * Compile-time for the same reason as the model: the answer is fixed by the target. */
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)                         \
+    || defined(CONFIG_IDF_TARGET_ESP32S3)
+#    define SENTRY_CHIP_ARCH "xtensa"
+#else
+#    define SENTRY_CHIP_ARCH "riscv"
 #endif
 
 static sentry_reset_reason_t map_reset_reason(esp_reset_reason_t reason)
@@ -74,56 +85,6 @@ static sentry_reset_reason_t map_reset_reason(esp_reset_reason_t reason)
     }
 }
 
-const char *sentry_reset_reason_name(sentry_reset_reason_t reason)
-{
-    switch (reason) {
-    case SENTRY_RESET_POWERON:
-        return "poweron";
-    case SENTRY_RESET_EXTERNAL:
-        return "external";
-    case SENTRY_RESET_SOFTWARE:
-        return "software";
-    case SENTRY_RESET_PANIC:
-        return "panic";
-    case SENTRY_RESET_INT_WDT:
-        return "int_wdt";
-    case SENTRY_RESET_TASK_WDT:
-        return "task_wdt";
-    case SENTRY_RESET_WDT:
-        return "wdt";
-    case SENTRY_RESET_DEEPSLEEP:
-        return "deepsleep";
-    case SENTRY_RESET_BROWNOUT:
-        return "brownout";
-    case SENTRY_RESET_SDIO:
-        return "sdio";
-    case SENTRY_RESET_USB:
-        return "usb";
-    case SENTRY_RESET_JTAG:
-        return "jtag";
-    case SENTRY_RESET_UNKNOWN:
-    default:
-        return "unknown";
-    }
-}
-
-bool sentry_reset_reason_is_crash(sentry_reset_reason_t reason)
-{
-    /* A software reset is *not* a crash: OTA updates and `ESP.restart()` land here and
-     * would otherwise drown the real crashes. Brownout is included deliberately — it is
-     * the single most common "my board randomly reboots" cause in the field. */
-    switch (reason) {
-    case SENTRY_RESET_PANIC:
-    case SENTRY_RESET_INT_WDT:
-    case SENTRY_RESET_TASK_WDT:
-    case SENTRY_RESET_WDT:
-    case SENTRY_RESET_BROWNOUT:
-        return true;
-    default:
-        return false;
-    }
-}
-
 void sentry_device_info_get(sentry_device_info_t *out)
 {
     if (!out) {
@@ -135,6 +96,7 @@ void sentry_device_info_get(sentry_device_info_t *out)
     esp_chip_info(&chip);
 
     snprintf(out->chip_model, sizeof(out->chip_model), "%s", SENTRY_CHIP_MODEL);
+    snprintf(out->arch, sizeof(out->arch), "%s", SENTRY_CHIP_ARCH);
     out->chip_revision = (uint16_t)chip.revision;
     out->cpu_cores = (uint8_t)chip.cores;
 
@@ -163,3 +125,30 @@ uint32_t sentry_device_free_heap(void) { return esp_get_free_heap_size(); }
 uint32_t sentry_device_min_free_heap(void) { return esp_get_minimum_free_heap_size(); }
 
 uint64_t sentry_device_uptime_ms(void) { return (uint64_t)(esp_timer_get_time() / 1000); }
+
+bool sentry_device_random(uint8_t *out, size_t len)
+{
+    if (!out) {
+        return false;
+    }
+    /* Hardware RNG. Note the ESP-IDF caveat: this is only truly random once RF (WiFi or
+     * BT) has been enabled — before that it is seeded but not entropic. Good enough for
+     * event ids, which need uniqueness across a fleet rather than unpredictability, and
+     * the MAC-derived device id keeps two boards apart even in the degenerate case. */
+    esp_fill_random(out, len);
+    return true;
+}
+
+uint64_t sentry_device_unix_time(void)
+{
+    time_t now = time(NULL);
+    /* An ESP32 has no battery-backed clock, so before SNTP runs `time()` returns something
+     * near the epoch. Treat anything implausibly old as "unknown" rather than stamping
+     * every field crash as 1970 — a wrong timestamp is worse than an absent one, because
+     * ingest can substitute its receive time only when the field is missing.
+     * 1600000000 is 2020-09-13; no real firmware build predates that. */
+    if ((uint64_t)now < 1600000000ULL) {
+        return 0;
+    }
+    return (uint64_t)now;
+}

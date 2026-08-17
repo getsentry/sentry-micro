@@ -279,13 +279,13 @@ Implemented today:
       self-hosted (for trace propagation / the Dynamic Sampling Context)
 - [x] Device context: chip model/revision/cores, eFuse device id, flash, heap, IDF version
 - [x] `esp_reset_reason()` mapped to stable Sentry reset reasons, with a crash/not-crash split
-- [x] Transport interface
+- [x] Transport interface, in C with a C++ wrapper
+- [x] Envelope + event JSON builder — fixed-buffer, no allocation, host-tested, and
+      verified byte-for-byte on an ESP32-PICO-D4
 - [x] Packaging + all-variant build
 
 Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
 
-- [ ] Envelope + event JSON builder (fixed-buffer, no allocation)
-- [ ] Reset-reason events at boot — the cheap, high-value tier
 - [ ] `WiFiTransport` — HTTPS POST straight to ingest
 - [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication
 - [ ] `RelayTransport` + the generic BLE relay protocol (host-whitelisted to the DSN host)

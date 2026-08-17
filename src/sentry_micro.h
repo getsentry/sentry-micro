@@ -34,6 +34,7 @@
 
 #include "core/sentry_boot.h"
 #include "core/sentry_dsn.h"
+#include "core/sentry_envelope.h"
 #include "core/sentry_transport.h"
 #include "device/sentry_device.h"
 
@@ -163,6 +164,20 @@ void sentry_set_transport(const sentry_transport_t *transport);
 
 /** The registered transport, or NULL. */
 const sentry_transport_t *sentry_get_transport(void);
+
+/**
+ * Fill `event` with everything the SDK already knows: a fresh event id, the configured
+ * release/environment/board, this boot's device facts, and live heap and uptime sampled
+ * now. The caller then sets `level` and `message` and writes it with
+ * `sentry_envelope_write()`.
+ *
+ * `event_id_buf` must be at least `SENTRY_MICRO_EVENT_ID_LEN` bytes and must outlive the
+ * event, which points into it rather than copying — the same no-allocation rule as
+ * everywhere else on this path.
+ *
+ * Returns false when the SDK is disabled or no entropy is available for the id.
+ */
+bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
 
 #ifdef __cplusplus
 } /* extern "C" */

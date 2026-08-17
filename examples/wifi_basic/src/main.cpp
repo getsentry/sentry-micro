@@ -6,10 +6,10 @@
  * POST to, the auth header it will send, and why the chip came up (poweron? panic?
  * brownout? watchdog?).
  *
- * Nothing is sent yet — event construction and the WiFi transport are the next milestones.
- * What this proves today is the part that has to be right before any of that matters: the
- * library builds and links on every ESP32 variant, the DSN parses into a correct ingest
- * URL, and the device context the events will carry is actually populated.
+ * It also builds the envelope this boot would send and prints it verbatim. Nothing is
+ * delivered yet — the transport is the next milestone — but what gets printed is the exact
+ * ndjson that will be POSTed, so the wire format is checkable on real hardware and not only
+ * in the host tests.
  *
  * Setup:
  *   cp src/secrets.example.h src/secrets.h   # then edit it
@@ -154,6 +154,48 @@ static void print_sentry_state()
     Serial.println();
 }
 
+/**
+ * Build the envelope this boot would send, and print it.
+ *
+ * There is no transport yet, so this is the end of the line — but it is the whole payload,
+ * byte for byte, that will eventually be POSTed to the ingest URL above. Printing it means
+ * the wire format is verifiable on real hardware rather than only in the host tests.
+ */
+static void print_boot_envelope()
+{
+    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
+    sentry_event_t event;
+    if (!sentry_event_prepare(&event, event_id)) {
+        Serial.println("[sentry] could not prepare an event (SDK disabled?)");
+        return;
+    }
+
+    const sentry_device_info_t &dev = sentry::device_info();
+    bool crashed = sentry_reset_reason_is_crash(dev.reset_reason);
+
+    char message[96];
+    snprintf(
+        message, sizeof(message), "Device booted: %s", sentry_reset_reason_name(dev.reset_reason));
+    event.message = message;
+    /* A crash is fatal; an ordinary power-on is just news. Getting this wrong would either
+     * page someone for a normal reboot or bury a real panic. */
+    event.level = crashed ? SENTRY_LEVEL_FATAL : SENTRY_LEVEL_INFO;
+
+    /* Stack-allocated: the no-allocation rule applies to the reporting path, and 2 KB of
+     * an 8 KB loop-task stack is affordable where a fragmented heap may not be. */
+    char envelope[2048];
+    size_t needed = sentry_envelope_write(envelope, sizeof(envelope), &event);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        Serial.printf("[sentry] envelope needs %u bytes, buffer is %u\n", (unsigned)needed,
+            (unsigned)sizeof(envelope));
+        return;
+    }
+
+    Serial.printf("── envelope (%u bytes) ───────────────────────\n", (unsigned)needed);
+    Serial.print(envelope);
+    Serial.println("──────────────────────────────────────────────");
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -183,6 +225,7 @@ void setup()
     }
 
     print_sentry_state();
+    print_boot_envelope();
     connect_wifi();
 }
 
