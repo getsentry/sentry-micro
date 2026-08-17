@@ -515,11 +515,23 @@ Implemented today:
 - [x] **Symbolicated end to end on hardware** — function, file, line and source, from a
       deliberate null dereference on an ESP32-PICO-D4
 
-Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
-- [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication
-- [ ] `RelayTransport` + the generic BLE relay protocol (host-whitelisted to the DSN host)
-- [ ] Offline ring buffer in NVS, rate limiting, `429`/`Retry-After` backoff
-- [ ] Breadcrumbs, sessions/release health, WLED usermod
+- [x] Generic relay protocol + `RelayTransport` — chunked binary framing for BLE-class links
+
+Not done:
+
+- [ ] **Breadcrumbs** — what the device was doing before it died
+- [ ] **Sessions / release health** — crash-free rate per release across a fleet
+- [ ] **WLED usermod** — the ready-made audience
+- [ ] Full RISC-V backtraces (needs server-side unwinding of the stack dump)
+
+Built but never exercised on hardware, which is worth knowing before trusting them:
+
+- `WiFiTransport` has never delivered an event. The bench board cannot reach a 2.4GHz
+  network, so every on-device delivery so far has gone through the serial relay.
+- The offline buffer has been shown to persist and drain within a single boot; its
+  across-a-power-cycle path is covered only by host tests.
+- The RISC-V coredump reader compiles and matches the ESP-IDF struct, but has never run —
+  there is no C-series board here.
 
 ## Contributing
 
