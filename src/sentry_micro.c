@@ -59,6 +59,11 @@ void sentry_options_defaults(sentry_options_t *options)
     }
     memset(options, 0, sizeof(*options));
     options->environment = "production";
+#ifdef SENTRY_BUILD_ID_HEX
+    /* Injected by scripts/release.sh, which passes the same value to the objcopy that
+     * stamps the ELF — so the firmware's claim and the uploaded file always agree. */
+    options->build_id = SENTRY_BUILD_ID_HEX;
+#endif
 }
 
 void sentry_set_logger(sentry_logger_fn logger) { g_logger = logger; }
@@ -299,6 +304,8 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
     event->environment = g_state.options.environment;
     event->board = g_state.options.board;
     event->device = &g_state.device;
+    event->build_id = g_state.options.build_id;
+    event->image_addr = g_state.options.image_addr;
 
     /* Sampled now rather than reused from init, so the numbers describe the moment the
      * event happened — which for a heap leak is the entire point. */

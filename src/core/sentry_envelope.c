@@ -41,6 +41,59 @@ void sentry_event_id_format(char *out, const uint8_t random_bytes[16])
     out[32] = '\0';
 }
 
+static int hex_value(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+bool sentry_debug_id_from_code_id(char *out, const char *code_id_hex)
+{
+    if (!out) {
+        return false;
+    }
+    out[0] = '\0';
+    if (!code_id_hex) {
+        return false;
+    }
+
+    /* Decode up to 16 bytes, zero-padding a short build-id rather than rejecting it —
+     * the same tolerance coredump-uploader has. */
+    uint8_t bytes[16] = { 0 };
+    size_t i = 0;
+    for (; i < 16 && code_id_hex[i * 2] && code_id_hex[i * 2 + 1]; i++) {
+        int high = hex_value(code_id_hex[i * 2]);
+        int low = hex_value(code_id_hex[i * 2 + 1]);
+        if (high < 0 || low < 0) {
+            return false;
+        }
+        bytes[i] = (uint8_t)((high << 4) | low);
+    }
+    if (i == 0) {
+        return false;
+    }
+    /* A trailing half-byte means the input was not whole hex bytes. */
+    if (code_id_hex[i * 2] && !code_id_hex[i * 2 + 1]) {
+        return false;
+    }
+
+    /* Little-endian UUID: the first three fields are byte-swapped, the last two are not.
+     * Getting this backwards produces a plausible-looking id that matches nothing. */
+    snprintf(out, SENTRY_MICRO_DEBUG_ID_LEN,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", bytes[3], bytes[2],
+        bytes[1], bytes[0], bytes[5], bytes[4], bytes[7], bytes[6], bytes[8], bytes[9], bytes[10],
+        bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+    return true;
+}
+
 /** Write the event document into `writer`, which may be in counting mode. */
 static void write_event(sentry_json_t *writer, const sentry_event_t *event)
 {
@@ -134,6 +187,30 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
     sentry_json_object_end(writer);
 
     sentry_json_object_end(writer); /* contexts */
+
+    /* The join to the uploaded debug files. Without this block Sentry has no way to know
+     * which build the addresses in this event came from, and they stay hex forever. */
+    if (event->build_id && event->build_id[0]) {
+        char debug_id[SENTRY_MICRO_DEBUG_ID_LEN];
+        if (sentry_debug_id_from_code_id(debug_id, event->build_id)) {
+            sentry_json_key(writer, "debug_meta");
+            sentry_json_object_begin(writer);
+            sentry_json_key(writer, "images");
+            sentry_json_array_begin(writer);
+            sentry_json_object_begin(writer);
+            sentry_json_kv_string(writer, "type", "elf");
+            sentry_json_kv_string(writer, "code_id", event->build_id);
+            sentry_json_kv_string(writer, "debug_id", debug_id);
+            /* Hex string, not a number: Sentry's schema expects addresses as strings. */
+            char image_addr[24];
+            snprintf(
+                image_addr, sizeof(image_addr), "0x%llx", (unsigned long long)event->image_addr);
+            sentry_json_kv_string(writer, "image_addr", image_addr);
+            sentry_json_object_end(writer);
+            sentry_json_array_end(writer);
+            sentry_json_object_end(writer);
+        }
+    }
 
     sentry_json_object_end(writer); /* event */
 }

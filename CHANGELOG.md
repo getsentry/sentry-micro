@@ -35,3 +35,6 @@
 - NVS and filesystem (LittleFS/SPIFFS/SD) storage backends, plus `sentry_enable_buffering()`
   and `sentry_flush()`. Undelivered envelopes persist and are retried; server-supplied
   `Retry-After` is honoured.
+- Symbolication pipeline: `scripts/release.sh` builds, stamps a GNU build-id into the ELF as
+  a non-ALLOC note, and uploads debug files with `sentry-cli`. Events now carry
+  `debug_meta.images[]` with the matching `code_id`/`debug_id`.

@@ -86,6 +86,23 @@ typedef struct {
      */
     const char *org_id;
 
+    /**
+     * GNU build-id of this firmware, lowercase hex — the key Sentry uses to find the debug
+     * files uploaded for this exact build. Optional; without it, addresses in a backtrace
+     * can never be resolved to functions and lines.
+     *
+     * Normally left unset: `scripts/release.sh` chooses the id, injects it as
+     * `SENTRY_BUILD_ID_HEX`, and `sentry_options_defaults()` picks it up automatically, so
+     * the firmware and the uploaded ELF cannot disagree.
+     */
+    const char *build_id;
+
+    /**
+     * Address the image is loaded at. 0 for ESP32, which executes in place at fixed
+     * addresses, so the addresses in the ELF are already the runtime ones.
+     */
+    uint64_t image_addr;
+
     /** When true, the SDK narrates what it is doing through the logger. Off in production. */
     bool debug;
 } sentry_options_t;

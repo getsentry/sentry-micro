@@ -10,10 +10,12 @@
 an ESP32 and delivers them to Sentry over *any* connectivity — WiFi directly, or by handing a
 fully-formed Sentry envelope to a companion app that just relays the bytes.
 
-> **Status: early prototype.** This is a Sentry hackweek project, not a released SDK. The
-> build, the packaging and the portable core exist and are tested; event construction and the
-> transports do not yet. See [Roadmap](#roadmap) for exactly what is and is not implemented,
-> and [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the full proposal.
+> **Status: early prototype.** This is a Sentry hackweek project, not a released SDK. It
+> builds real Sentry envelopes on-device, delivers them over WiFi or a host relay, buffers
+> what it cannot send, and ships the debug files needed to symbolicate. What it does *not*
+> do yet is read a coredump — so events carry device context and reset reasons, not stack
+> frames. See [Roadmap](#roadmap) for the exact line, and
+> [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the full proposal.
 
 ## Why this is not `sentry-native`
 
@@ -28,11 +30,12 @@ What that means concretely:
 - **No allocation on the reporting path.** A crash handler cannot trust the heap — it may be
   exhausted, fragmented, or the very thing that failed. All SDK state is statically allocated
   and fixed-size, so its RAM cost shows up in the map file.
-- **No filesystem.** Offline buffering targets NVS/flash directly.
+- **No filesystem assumed.** Offline buffering works against NVS directly, or against a
+  filesystem you already mount.
 - **The device builds the envelope; the transport is a dumb pipe.** Sentry's ingest protocol is
   SDK-agnostic — a plain `POST /api/<project>/envelope/` with an `X-Sentry-Auth` header. The
   library owns every bit of that; delivery is one virtual `send()` call behind
-  [`sentry::Transport`](src/transport/sentry_transport.h). That is what lets the same core
+  [`sentry_transport_t`](src/core/sentry_transport.h). That is what lets the same core
   reach Sentry over WiFi, BLE, serial or LoRa, and why a companion app needs *zero* Sentry
   knowledge to relay for a device with no internet of its own.
 
@@ -48,16 +51,24 @@ src/                        the library
   sentry_micro_cxx.cpp      the one non-inline bit of it (the Arduino Serial logger)
   core/                     portable freestanding C: no Arduino, no ESP-IDF, host-testable
     sentry_boot.h           version, size limits
-    sentry_dsn.{h,c}        DSN parsing, ingest URL, auth header
+    sentry_dsn.{h,c}        DSN parsing, ingest URL, auth header, host whitelisting
+    sentry_json.{h,c}       fixed-buffer JSON writer
+    sentry_envelope.{h,c}   event + envelope construction, debug ids
+    sentry_base64.{h,c}     encoding for the relay protocols
+    sentry_buffer.{h,c}     offline ring-buffer policy over a storage vtable
     sentry_transport.{h,c}  the delivery interface
-  device/                   chip-specific context collection
-    sentry_device.h         the fields every event carries
-    sentry_device_esp32.c   ESP-IDF implementation
+  device/                   chip-specific: collection and storage
+    sentry_device_esp32.c   chip info, reset reason, entropy, clock
+    sentry_storage_nvs.c    buffer storage in NVS
+    sentry_storage_fs.cpp   buffer storage on LittleFS/SPIFFS/SD
   transport/
-    sentry_transport.hpp    C++ base class over the C interface
+    sentry_transport.hpp        C++ base class over the C interface
+    sentry_transport_wifi.*     HTTPS straight to ingest
+    sentry_transport_serial.*   relay through a USB host
 test/                       host unit tests (Unity), run with `pio test -e native`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
+scripts/                    release.sh (build + stamp + upload), serial_relay.py
 partitions/                 reference partition tables (with a `coredump` partition)
 platformio.ini              host test project (firmware builds live in the examples)
 ```
@@ -222,6 +233,68 @@ https — exact match — so a buggy or hostile device cannot use its host as an
 That is non-negotiable when the relay is a user's *phone*, and it is enforced identically
 here. Verified refused: `evil.com`, `…sentry.io.evil.com`, `evil-…sentry.io`, a plaintext
 downgrade, `https://…sentry.io@evil.com/`, `file:///etc/passwd`, and `169.254.169.254`.
+
+## Offline buffering
+
+An envelope that cannot be delivered is persisted and retried, rather than dropped. This
+matters more here than on a desktop: the most valuable event this SDK produces — the report
+of the crash that just happened — is built at boot, *before* the radio has associated.
+
+```cpp
+sentry_enable_buffering(sentry_storage_nvs(8));   // or storage_fs(), below
+...
+void loop() {
+    if (sentry_buffered_count() > 0) sentry_flush(2);   // on an interval, not every pass
+}
+```
+
+**Storage is pluggable**, because the right answer depends on what the firmware already has:
+
+| Backend | Use when |
+| --- | --- |
+| `sentry_storage_nvs(slots)` | no filesystem; uses the stock 20 KB `nvs` partition |
+| `sentry::storage_fs(LittleFS, slots)` | you already mount LittleFS / SPIFFS / SD |
+
+`storage_fs` takes `fs::FS`, the Arduino base class, so pass whatever object you already
+mounted. **Neither backend mounts, formats, or erases anything.** NVS never erases to reclaim
+space, and the filesystem backend never calls `begin()` — a reporter that reformatted a
+partition of user data to report a crash would be worse than the crash. Everything is
+confined to a `sentry` namespace / `/sentry` directory.
+
+Writing your own is five functions (`write`, `read`, `erase`, `load_meta`, `save_meta`) —
+the same vtable pattern as transports, which is what lets the ring logic be host-tested
+against a plain array.
+
+## Symbolication: making backtraces readable
+
+Sentry never sees your code. It matches an event to an uploaded ELF by `debug_id`, derived
+from the firmware's GNU build-id. One command does the whole chain:
+
+```bash
+scripts/release.sh -e esp32dev -r 'my-firmware@1.2.3'
+```
+
+which picks a build-id, compiles it in, stamps it into the ELF, and uploads the ELF to
+Sentry with `sentry-cli`. After that, addresses in an event resolve to functions and lines.
+
+**Do not use `-Wl,--build-id`.** On ESP32 the linker marks the note `ALLOC` and places it at
+the start of IRAM, pushing `.iram0.vectors` off `0x40080000`:
+
+| | `.note.gnu.build-id` | `.iram0.vectors` |
+| --- | --- | --- |
+| without the flag | — | `0x40080000` ✅ |
+| with the flag | `0x40080000` | `0x40080024` ❌ |
+
+`VECBASE` requires 1 KB alignment, so the first interrupt jumps into the note. Measured, not
+theorised — the board boot-loops with `rst:0x10 (RTCWDT_RTC_RESET)`. `scripts/stamp_build_id.py`
+adds the note *after* linking as a **non-ALLOC** section instead: present in the ELF where
+`sentry-cli` reads it, absent from flash. That also solves the chicken-and-egg — the firmware
+must know its own build-id to report it, and a linker-computed one only exists after linking,
+so we choose the value and use it in both places.
+
+Each build variant gets its own id, derived from `release + env`. That is required, not
+cosmetic: every board in a matrix is a distinct binary, and resolving addresses against the
+wrong one produces confidently wrong function names.
 
 ## Writing a transport
 

@@ -44,6 +44,26 @@ const char *sentry_level_name(sentry_level_t level);
  */
 void sentry_event_id_format(char *out, const uint8_t random_bytes[16]);
 
+/** Length of a formatted debug id: 36 characters plus the terminator. */
+#define SENTRY_MICRO_DEBUG_ID_LEN 37
+
+/**
+ * Derive Sentry's `debug_id` from a GNU build-id.
+ *
+ * This is the join between an event and the debug files uploaded for the build that
+ * produced it. Sentry indexes uploaded ELFs by this value, so getting the byte order wrong
+ * means every symbolication lookup silently misses.
+ *
+ * The first 16 bytes of the build-id are read as a *little-endian* UUID — the first three
+ * fields byte-swapped, the last two not — which is what `symbolic` does and what
+ * `getsentry/coredump-uploader` reproduces in `code_id_to_debug_id`. A build-id shorter
+ * than 16 bytes is zero-padded, matching the same reference.
+ *
+ * `out` must hold `SENTRY_MICRO_DEBUG_ID_LEN` bytes. Returns false if `code_id_hex` is not
+ * valid hex, in which case `out` is left empty.
+ */
+bool sentry_debug_id_from_code_id(char *out, const char *code_id_hex);
+
 /** Everything that varies between one event and the next. */
 typedef struct {
     /** 32 hex characters. Required — ingest rejects an event without one. */
@@ -65,6 +85,24 @@ typedef struct {
 
     /** Per-boot facts. Required. */
     const sentry_device_info_t *device;
+
+    /**
+     * GNU build-id of this firmware, lowercase hex. Optional.
+     *
+     * When set, the event carries a `debug_meta` image so Sentry can match it against the
+     * ELF uploaded for this build and turn instruction addresses into functions and lines.
+     * Without it, addresses stay hex forever.
+     */
+    const char *build_id;
+
+    /**
+     * Address the image is loaded at, for computing addresses relative to it.
+     *
+     * 0 for ESP32, which executes in place at fixed addresses with no relocation, so the
+     * addresses in the ELF are already the runtime ones. Kept configurable because that
+     * stops being true the moment anything relocates.
+     */
+    uint64_t image_addr;
 
     /* Sampled at event time rather than at boot, so they describe the moment. */
     uint32_t free_heap_bytes;

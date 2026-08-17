@@ -380,6 +380,77 @@ static void test_base64_refuses_a_buffer_it_cannot_fill(void)
     TEST_ASSERT_EQUAL_STRING("", small);
 }
 
+/* ── debug ids ────────────────────────────────────────────────────────────── */
+
+static void test_derives_the_debug_id_from_a_build_id(void)
+{
+    char debug_id[SENTRY_MICRO_DEBUG_ID_LEN];
+    /* A real build-id taken off our own firmware, with the value Sentry indexes it under.
+     * Cross-checked against Python's uuid.UUID(bytes_le=...), which is exactly what
+     * getsentry/coredump-uploader uses. */
+    TEST_ASSERT_TRUE(
+        sentry_debug_id_from_code_id(debug_id, "4978b44454c7d2c87b9a58d5bfed23f3e1d4e831"));
+    TEST_ASSERT_EQUAL_STRING("44b47849-c754-c8d2-7b9a-58d5bfed23f3", debug_id);
+
+    /* The first three fields are byte-swapped and the last two are not. Reversing that
+     * yields an id that looks perfectly valid and matches no uploaded file at all. */
+    TEST_ASSERT_TRUE(sentry_debug_id_from_code_id(debug_id, "000102030405060708090a0b0c0d0e0f"));
+    TEST_ASSERT_EQUAL_STRING("03020100-0504-0706-0809-0a0b0c0d0e0f", debug_id);
+}
+
+static void test_pads_a_short_build_id(void)
+{
+    char debug_id[SENTRY_MICRO_DEBUG_ID_LEN];
+    /* Shorter than 16 bytes is zero-padded rather than rejected, matching the reference. */
+    TEST_ASSERT_TRUE(sentry_debug_id_from_code_id(debug_id, "aabbccdd"));
+    TEST_ASSERT_EQUAL_STRING("ddccbbaa-0000-0000-0000-000000000000", debug_id);
+}
+
+static void test_rejects_a_malformed_build_id(void)
+{
+    char debug_id[SENTRY_MICRO_DEBUG_ID_LEN];
+    TEST_ASSERT_FALSE(sentry_debug_id_from_code_id(debug_id, "not-hex-at-all"));
+    TEST_ASSERT_EQUAL_STRING("", debug_id);
+    TEST_ASSERT_FALSE(sentry_debug_id_from_code_id(debug_id, ""));
+    TEST_ASSERT_FALSE(sentry_debug_id_from_code_id(debug_id, NULL));
+    /* An odd number of hex characters is not a whole number of bytes. */
+    TEST_ASSERT_FALSE(sentry_debug_id_from_code_id(debug_id, "aabbc"));
+}
+
+static void test_event_carries_debug_meta_when_a_build_id_is_known(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.build_id = "4978b44454c7d2c87b9a58d5bfed23f3e1d4e831";
+    event.image_addr = 0;
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"elf\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"code_id\":\"4978b44454c7d2c87b9a58d5bfed23f3e1d4e831\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"debug_id\":\"44b47849-c754-c8d2-7b9a-58d5bfed23f3\""));
+    /* Addresses are strings in Sentry's schema, not JSON numbers. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"image_addr\":\"0x0\""));
+}
+
+static void test_event_omits_debug_meta_without_a_build_id(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.build_id = NULL;
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    /* An empty images array would claim we know the build and cannot symbolicate it;
+     * absent correctly says we do not know. */
+    TEST_ASSERT_NULL(strstr(buf, "debug_meta"));
+
+    /* And a malformed one must not emit a half-built block either. */
+    event.build_id = "zzzz";
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NULL(strstr(buf, "debug_meta"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -393,6 +464,11 @@ int main(void)
     RUN_TEST(test_counts_without_a_buffer);
     RUN_TEST(test_reports_overflow_and_refuses_partial_output);
     RUN_TEST(test_formats_an_event_id);
+    RUN_TEST(test_derives_the_debug_id_from_a_build_id);
+    RUN_TEST(test_pads_a_short_build_id);
+    RUN_TEST(test_rejects_a_malformed_build_id);
+    RUN_TEST(test_event_carries_debug_meta_when_a_build_id_is_known);
+    RUN_TEST(test_event_omits_debug_meta_without_a_build_id);
     RUN_TEST(test_event_contains_the_fields_ingest_needs);
     RUN_TEST(test_event_omits_the_timestamp_when_the_clock_is_unset);
     RUN_TEST(test_event_omits_unknown_optional_fields);
