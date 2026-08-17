@@ -314,6 +314,18 @@ cd examples/wifi_basic && pio run      # compile-check against every ESP32 varia
 Building the example on all four variants is the portability gate — a change that breaks
 RISC-V or single-core builds fails there rather than on someone's bench.
 
+**Touching anything that uses an Arduino API? Build C6 too:**
+
+```bash
+cd examples/wifi_basic && pio run -e esp32-c6
+```
+
+The four default envs are Arduino core **2.x** (IDF 4.4.7); C6 is core **3.x** (IDF 5.x) via
+the pioarduino fork, and the two are not source-compatible. Core 3.x renamed the networking
+classes, so `WiFiClient` there is a *typedef* for `NetworkClient` — a forward declaration of
+it compiles fine on 2.x and is a conflicting definition on 3.x. CI catches this, but the C6
+job is the slowest one, so it is cheaper to find locally.
+
 ## Roadmap
 
 Implemented today:

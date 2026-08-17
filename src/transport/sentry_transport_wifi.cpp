@@ -61,6 +61,9 @@ uint32_t parse_sentry_rate_limits_ms(const String &value)
 
 } // namespace
 
+static Response post_envelope(WiFiClient &client, const char *url, const Headers &headers,
+    const uint8_t *body, size_t len, uint32_t timeout_ms);
+
 bool WiFiTransport::is_available()
 {
     /* WL_CONNECTED alone can be true for a moment before DHCP completes, and a POST then
@@ -108,24 +111,32 @@ Response WiFiTransport::send(
             client.setInsecure();
         }
         client.setTimeout(timeout_ms_ / 1000);
-        return post(client, url, headers, body, len);
+        return post_envelope(client, url, headers, body, len, timeout_ms_);
     }
 
     WiFiClient client;
     client.setTimeout(timeout_ms_ / 1000);
-    return post(client, url, headers, body, len);
+    return post_envelope(client, url, headers, body, len, timeout_ms_);
 }
 
-Response WiFiTransport::post(
-    WiFiClient &client, const char *url, const Headers &headers, const uint8_t *body, size_t len)
+/**
+ * Issue the POST over an already-configured client.
+ *
+ * A free function, not a member, so the header never names Arduino's client type — see the
+ * note in the class. `WiFiClient` is spelled here where <WiFi.h> has already defined it,
+ * which works on both Arduino core 2.x (where it is a class) and 3.x (a typedef for
+ * NetworkClient).
+ */
+static Response post_envelope(WiFiClient &client, const char *url, const Headers &headers,
+    const uint8_t *body, size_t len, uint32_t timeout_ms)
 {
     HTTPClient http;
     if (!http.begin(client, url)) {
         return SEND_ERROR;
     }
 
-    http.setConnectTimeout((int32_t)timeout_ms_);
-    http.setTimeout((uint16_t)timeout_ms_);
+    http.setConnectTimeout((int32_t)timeout_ms);
+    http.setTimeout((uint16_t)timeout_ms);
     /* Ingest never redirects, and following one would send the auth header to wherever the
      * redirect pointed — the same open-proxy hazard the host whitelist exists to prevent. */
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);

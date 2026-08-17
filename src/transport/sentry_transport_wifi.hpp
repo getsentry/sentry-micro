@@ -22,8 +22,6 @@
 
 #if defined(ARDUINO)
 
-class WiFiClient;
-
 namespace sentry {
 
 class WiFiTransport : public Transport {
@@ -69,9 +67,11 @@ public:
     void set_allowed_host(const char *host) { allowed_host_ = host; }
 
 private:
-    Response post(WiFiClient &client, const char *url, const Headers &headers, const uint8_t *body,
-        size_t len);
-
+    /* The actual POST is a free function in the .cpp rather than a member, so this header
+     * never has to name Arduino's client type. That matters more than it looks: on Arduino
+     * core 3.x `WiFiClient` is a *typedef* for `NetworkClient`, so any forward declaration
+     * here is a conflicting definition and any include drags the whole network stack into
+     * every translation unit that wants to construct this class. */
     const char *ca_cert_ = nullptr;
     const char *allowed_host_ = nullptr;
     uint32_t timeout_ms_ = 10000;
