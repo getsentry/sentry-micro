@@ -546,6 +546,11 @@ Built but never exercised on hardware, which is worth knowing before trusting th
 - The RISC-V coredump reader compiles and matches the ESP-IDF struct, but has never run —
   there is no C-series board here.
 
+## Onboarding
+
+New to the project? [ONBOARDING.md](ONBOARDING.md) covers hardware, first event, first
+symbolicated crash, and the traps that are not obvious — several of which fail silently.
+
 ## Contributing
 
 This is a prototype and the API will change. If you want ESP32 support in Sentry, the most
