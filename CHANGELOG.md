@@ -51,3 +51,8 @@
   them.
 - Debug images carry a `code_file`, so frames show the firmware name instead of `<unknown>`
   in the module column.
+- Generic relay protocol (`core/sentry_relay.*`) and `RelayTransport`: binary, chunked
+  framing for packet links with a small MTU, so a companion app over BLE (or any bidirectional
+  link) can perform the request. Host-whitelisted like the other transports.
+- Core dump reading now has a real RISC-V path; the C-series report `mcause`/`mtval` and no
+  precomputed backtrace, which is a different structure rather than different field names.
