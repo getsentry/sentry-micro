@@ -451,6 +451,84 @@ static void test_event_omits_debug_meta_without_a_build_id(void)
     TEST_ASSERT_NULL(strstr(buf, "debug_meta"));
 }
 
+/* ── crash events ─────────────────────────────────────────────────────────── */
+
+static sentry_coredump_t sample_coredump(void)
+{
+    sentry_coredump_t crash;
+    memset(&crash, 0, sizeof(crash));
+    crash.available = true;
+    snprintf(crash.task_name, sizeof(crash.task_name), "loopTask");
+    snprintf(crash.exception_type, sizeof(crash.exception_type), "StoreProhibited");
+    crash.exception_pc = 0x400d1234;
+    /* A null dereference: the faulting address is 0, which must still be reported. */
+    crash.exception_addr = 0x00000000;
+    crash.exception_addr_valid = true;
+    /* Innermost first, as ESP-IDF reports it. */
+    crash.frames[0] = 0x400d1234;
+    crash.frames[1] = 0x400d5678;
+    crash.frames[2] = 0x400d9abc;
+    crash.frame_count = 3;
+    return crash;
+}
+
+static void test_crash_event_carries_an_exception(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"StoreProhibited\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"thread_id\":\"loopTask\""));
+    /* The value line carries the faulting address, which is half the diagnosis for a null
+     * dereference before any symbolication happens at all. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "accessing 0x00000000"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"instruction_addr\":\"0x400d1234\""));
+}
+
+static void test_frames_are_reversed_for_sentry(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+
+    /* ESP-IDF gives innermost-first; Sentry renders oldest-first with the crash at the
+     * bottom. So the outermost frame must appear before the crashing one in the JSON.
+     * Getting this backwards produces a stacktrace that reads upside down and looks
+     * entirely plausible, which is exactly why it is pinned here. */
+    const char *outermost = strstr(buf, "\"instruction_addr\":\"0x400d9abc\"");
+    const char *crashing = strstr(buf, "\"instruction_addr\":\"0x400d1234\"");
+    TEST_ASSERT_NOT_NULL(outermost);
+    TEST_ASSERT_NOT_NULL(crashing);
+    TEST_ASSERT_TRUE_MESSAGE(outermost < crashing, "frames are not oldest-first");
+}
+
+static void test_event_without_a_crash_has_no_exception(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = NULL;
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    /* An empty exception block would create an issue with no cause; absent is correct. */
+    TEST_ASSERT_NULL(strstr(buf, "exception"));
+
+    /* An unavailable coredump is the same as none. */
+    sentry_coredump_t empty;
+    memset(&empty, 0, sizeof(empty));
+    event.coredump = &empty;
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NULL(strstr(buf, "exception"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -472,6 +550,9 @@ int main(void)
     RUN_TEST(test_event_contains_the_fields_ingest_needs);
     RUN_TEST(test_event_omits_the_timestamp_when_the_clock_is_unset);
     RUN_TEST(test_event_omits_unknown_optional_fields);
+    RUN_TEST(test_crash_event_carries_an_exception);
+    RUN_TEST(test_frames_are_reversed_for_sentry);
+    RUN_TEST(test_event_without_a_crash_has_no_exception);
     RUN_TEST(test_envelope_header_length_matches_the_payload);
     RUN_TEST(test_envelope_reports_the_size_it_needs);
     RUN_TEST(test_rejects_an_event_without_an_id);

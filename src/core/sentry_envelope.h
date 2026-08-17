@@ -14,6 +14,7 @@
 #define SENTRY_MICRO_ENVELOPE_H_INCLUDED
 
 #include "sentry_boot.h"
+#include "sentry_coredump.h"
 #include "sentry_device_info.h"
 
 #ifdef __cplusplus
@@ -94,6 +95,14 @@ typedef struct {
      * Without it, addresses stay hex forever.
      */
     const char *build_id;
+
+    /**
+     * Crash details, when this event reports one. Optional.
+     *
+     * When present the event carries an `exception` with a stacktrace, which is what Sentry
+     * symbolicates against the uploaded debug files.
+     */
+    const sentry_coredump_t *coredump;
 
     /**
      * Address the image is loaded at, for computing addresses relative to it.

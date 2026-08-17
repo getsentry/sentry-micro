@@ -278,6 +278,23 @@ uint32_t sentry_flush(uint32_t max_events)
     return delivered;
 }
 
+bool sentry_event_attach_coredump(sentry_event_t *event, sentry_coredump_t *storage)
+{
+    if (!event || !storage || !g_state.enabled) {
+        return false;
+    }
+    if (!sentry_coredump_read(storage) || !storage->available) {
+        return false;
+    }
+
+    event->coredump = storage;
+    event->level = SENTRY_LEVEL_FATAL;
+
+    debug_log("crash recovered: %s in %s, %u frames%s", storage->exception_type, storage->task_name,
+        (unsigned)storage->frame_count, storage->truncated ? " (truncated)" : "");
+    return true;
+}
+
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
 {
     if (!event || !event_id_buf) {

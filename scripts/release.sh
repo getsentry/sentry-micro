@@ -86,8 +86,13 @@ echo "  release   ${RELEASE}"
 echo "  build-id  ${BUILD_ID}"
 echo
 
-# Compiled in via scripts/env_secrets.py, so the firmware reports exactly the id we stamp.
+# Both compiled in via scripts/env_secrets.py, so the firmware reports exactly the build-id
+# we stamp and exactly the release we register. Leaving the release to a constant in the
+# firmware means events arrive labelled with a different release than the one that owns the
+# debug files — harmless for symbolication, which matches on debug_id, but thoroughly
+# confusing in the issue stream.
 export SENTRY_MICRO_BUILD_ID="$BUILD_ID"
+export SENTRY_MICRO_RELEASE="$RELEASE"
 
 echo "→ building"
 ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" )

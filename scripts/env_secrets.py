@@ -32,6 +32,7 @@ SECRETS = (
     # Not a secret, but the same environment-to-macro mechanism. Set by scripts/release.sh
     # so the firmware reports the identical build-id that gets stamped into the ELF.
     ("SENTRY_MICRO_BUILD_ID", "SENTRY_BUILD_ID_HEX"),
+    ("SENTRY_MICRO_RELEASE", "SENTRY_RELEASE"),
 )
 
 # Values that must never be echoed: the WiFi password, and the DSN (which embeds a key that

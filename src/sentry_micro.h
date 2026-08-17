@@ -37,6 +37,7 @@
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
 #include "core/sentry_transport.h"
+#include "device/sentry_coredump_device.h"
 #include "device/sentry_device.h"
 
 /** Version of this SDK, as a string, for compile-time checks. */
@@ -206,6 +207,21 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
  * attached, which is the same "buffer it and retry" signal a downed radio produces.
  */
 sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len);
+
+/**
+ * Attach the stored core dump to `event`, if there is one.
+ *
+ * `storage` is filled in and pointed at by the event, so it must outlive the event — pass
+ * a local in the same scope. Nothing is allocated.
+ *
+ * Also raises the event to `fatal` and sets a message describing the crash, since an event
+ * carrying a backtrace is by definition not routine. Returns true when a crash was attached.
+ *
+ * Do **not** call `sentry_coredump_erase()` until the resulting envelope has been delivered
+ * or buffered: erase early and a failed send loses the crash; never erase and every boot
+ * re-reports it.
+ */
+bool sentry_event_attach_coredump(sentry_event_t *event, sentry_coredump_t *storage);
 
 /**
  * Turn on offline buffering, backed by `storage`.

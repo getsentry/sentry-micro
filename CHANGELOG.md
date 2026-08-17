@@ -38,3 +38,5 @@
 - Symbolication pipeline: `scripts/release.sh` builds, stamps a GNU build-id into the ELF as
   a non-ALLOC note, and uploads debug files with `sentry-cli`. Events now carry
   `debug_meta.images[]` with the matching `code_id`/`debug_id`.
+- Core dump reading: crashes are recovered on the next boot and reported as a Sentry
+  `exception` with a stacktrace, symbolicated server-side against the uploaded ELF.

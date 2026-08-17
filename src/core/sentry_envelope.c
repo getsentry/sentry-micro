@@ -188,6 +188,61 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
 
     sentry_json_object_end(writer); /* contexts */
 
+    /* The crash itself. `exception` is what makes this an issue with a title and a
+     * stacktrace rather than a log line with some numbers attached. */
+    if (event->coredump && event->coredump->available) {
+        const sentry_coredump_t *crash = event->coredump;
+
+        sentry_json_key(writer, "exception");
+        sentry_json_object_begin(writer);
+        sentry_json_key(writer, "values");
+        sentry_json_array_begin(writer);
+        sentry_json_object_begin(writer);
+
+        /* Groups the issue. Falls back to something honest rather than inventing a cause. */
+        sentry_json_kv_string(
+            writer, "type", crash->exception_type[0] ? crash->exception_type : "Panic");
+
+        char value[96];
+        if (crash->exception_addr_valid) {
+            snprintf(value, sizeof(value), "%s at 0x%08x, accessing 0x%08x",
+                crash->exception_type[0] ? crash->exception_type : "Panic",
+                (unsigned)crash->exception_pc, (unsigned)crash->exception_addr);
+        } else {
+            snprintf(value, sizeof(value), "%s at 0x%08x",
+                crash->exception_type[0] ? crash->exception_type : "Panic",
+                (unsigned)crash->exception_pc);
+        }
+        sentry_json_kv_string(writer, "value", value);
+        sentry_json_kv_string_opt(writer, "thread_id", crash->task_name);
+        /* `native` here too, so this exception goes through native symbolication. */
+        sentry_json_kv_string(writer, "platform", "native");
+
+        sentry_json_key(writer, "stacktrace");
+        sentry_json_object_begin(writer);
+        sentry_json_key(writer, "frames");
+        sentry_json_array_begin(writer);
+        /*
+         * Reversed. ESP-IDF reports the backtrace innermost-first (the crashing frame at
+         * index 0); Sentry renders frames oldest-first, with the crash at the bottom. Emit
+         * them in the wrong order and every stacktrace reads upside down — which looks
+         * plausible enough that nobody notices immediately.
+         */
+        for (uint32_t i = crash->frame_count; i > 0; i--) {
+            char address[24];
+            snprintf(address, sizeof(address), "0x%08x", (unsigned)crash->frames[i - 1]);
+            sentry_json_object_begin(writer);
+            sentry_json_kv_string(writer, "instruction_addr", address);
+            sentry_json_object_end(writer);
+        }
+        sentry_json_array_end(writer);
+        sentry_json_object_end(writer); /* stacktrace */
+
+        sentry_json_object_end(writer);
+        sentry_json_array_end(writer);
+        sentry_json_object_end(writer); /* exception */
+    }
+
     /* The join to the uploaded debug files. Without this block Sentry has no way to know
      * which build the addresses in this event came from, and they stay hex forever. */
     if (event->build_id && event->build_id[0]) {

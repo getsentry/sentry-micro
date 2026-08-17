@@ -42,8 +42,19 @@
 #    define SENTRY_MICRO_DEBUG 0
 #endif
 
-/* Identifies this build in Sentry, and is what debug files must be uploaded against. */
-#define FIRMWARE_RELEASE "sentry-micro-example@" SENTRY_MICRO_VERSION
+/* Build with -D SENTRY_DEMO_CRASH=1 to deliberately crash once per power-on, for testing
+ * the whole crash -> reboot -> report -> symbolicate path. Off by default, obviously. */
+#ifndef SENTRY_DEMO_CRASH
+#    define SENTRY_DEMO_CRASH 0
+#endif
+
+/* Identifies this build in Sentry. Set by scripts/release.sh so the release the firmware
+ * reports is the same one the debug files were uploaded under; the fallback only applies to
+ * a plain `pio run`. */
+#ifndef SENTRY_RELEASE
+#    define SENTRY_RELEASE "sentry-micro-example@" SENTRY_MICRO_VERSION
+#endif
+#define FIRMWARE_RELEASE SENTRY_RELEASE
 
 /* Attached as a tag, so a fleet of mixed hardware stays separable in the issue stream.
  * PlatformIO defines BOARD for every env, which is exactly the identifier we want. */
@@ -196,6 +207,89 @@ static const char *send_result_name(sentry_send_result_t result)
  * device learns nothing about *what* it sent, so having the exact payload on the console
  * is what makes a rejected or silently-dropped event diagnosable.
  */
+#if SENTRY_DEMO_CRASH
+/*
+ * A deliberate null-pointer store, three calls deep.
+ *
+ * `noinline` on each level so the optimiser cannot collapse them into one frame — the point
+ * is to produce a backtrace with several entries to symbolicate. `volatile` stops the store
+ * being discarded as dead code, which at -Os it otherwise would be.
+ */
+static void __attribute__((noinline)) demo_crash_innermost()
+{
+    volatile uint32_t *nowhere = (volatile uint32_t *)0;
+    *nowhere = 0xdeadbeef;
+}
+
+static void __attribute__((noinline)) demo_crash_middle() { demo_crash_innermost(); }
+
+static void __attribute__((noinline)) demo_crash_outer() { demo_crash_middle(); }
+#endif
+
+/**
+ * Report a crash recovered from the core dump partition, if there is one.
+ *
+ * Returns true if a crash was reported, so the caller knows not to immediately cause
+ * another one.
+ */
+static bool report_crash()
+{
+    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
+    sentry_event_t event;
+    sentry_coredump_t crash;
+
+    if (!sentry_event_prepare(&event, event_id)) {
+        return false;
+    }
+    /* `crash` has to outlive the event, which points into it — hence both being locals of
+     * this function rather than the event owning a copy. */
+    if (!sentry_event_attach_coredump(&event, &crash)) {
+        return false;
+    }
+
+    char message[128];
+    snprintf(message, sizeof(message), "%s in task %s",
+        crash.exception_type[0] ? crash.exception_type : "Panic", crash.task_name);
+    event.message = message;
+
+    Serial.println();
+    Serial.println("── crash recovered from the previous boot ────");
+    Serial.printf("exception   : %s\n", crash.exception_type);
+    Serial.printf("task        : %s\n", crash.task_name);
+    Serial.printf("pc          : 0x%08x\n", (unsigned)crash.exception_pc);
+    if (crash.exception_addr_valid) {
+        Serial.printf("accessing   : 0x%08x\n", (unsigned)crash.exception_addr);
+    }
+    Serial.printf("backtrace   : %u frames%s\n", (unsigned)crash.frame_count,
+        crash.truncated ? " (truncated)" : "");
+    for (uint32_t i = 0; i < crash.frame_count; i++) {
+        Serial.printf("  #%u 0x%08x\n", (unsigned)i, (unsigned)crash.frames[i]);
+    }
+    Serial.println("──────────────────────────────────────────────");
+
+    char envelope[2048];
+    size_t needed = sentry_envelope_write(envelope, sizeof(envelope), &event);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        Serial.printf("[sentry] crash envelope needs %u bytes\n", (unsigned)needed);
+        return true;
+    }
+
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+    Serial.printf("[sentry] crash report: %s (http %u)\n", send_result_name(response.result),
+        (unsigned)response.http_status);
+
+    /* Erase only once the envelope is somewhere durable — delivered, or in the buffer.
+     * Erasing on a plain failure would throw away the crash we just recovered. */
+    if (response.result == SENTRY_SEND_OK || sentry_buffered_count() > 0) {
+        sentry_coredump_erase();
+        Serial.println("[sentry] core dump erased");
+    } else {
+        Serial.println("[sentry] core dump kept for the next boot");
+    }
+    Serial.printf("[sentry] crash event %s\n", event_id);
+    return true;
+}
+
 static void report_boot()
 {
     char event_id[SENTRY_MICRO_EVENT_ID_LEN];
@@ -303,7 +397,21 @@ void setup()
         Serial.println("[sentry] transport: serial relay (run scripts/serial_relay.py)");
     }
 
-    report_boot();
+    /* A recovered crash is the more interesting event, and reporting both on the same boot
+     * would double up. */
+    if (!report_crash()) {
+        report_boot();
+    }
+
+#if SENTRY_DEMO_CRASH
+    /* Crash only when this boot did *not* follow a crash, so one power-on produces exactly
+     * one crash-and-report cycle instead of an endless loop. */
+    if (!sentry_reset_reason_is_crash(sentry::device_info().reset_reason)) {
+        Serial.println("\n[demo] crashing deliberately in 3s ...");
+        delay(3000);
+        demo_crash_outer();
+    }
+#endif
 }
 
 void loop()
