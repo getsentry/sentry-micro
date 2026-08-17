@@ -44,6 +44,57 @@
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 
+/**
+ * List what the radio can actually see.
+ *
+ * Printed only when a connect fails, because the failure statuses are nearly useless on
+ * their own: `WL_NO_SSID_AVAIL` covers "typo in the SSID", "out of range", and — the one
+ * that catches people out — "the network is 5 GHz and this chip is 2.4 GHz only". A scan
+ * distinguishes them in one line.
+ */
+static void report_visible_networks()
+{
+    /* A connect attempt left running holds the radio and makes the scan fail rather than
+     * return an empty list. Drop it first, but keep the credentials for the next attempt. */
+    WiFi.disconnect(false, false);
+    delay(100);
+
+    Serial.println("[wifi] scanning for 2.4GHz networks in range ...");
+    /* show_hidden, and a longer dwell than the 300ms default. A beacon interval is ~100ms,
+     * so a short dwell on a busy channel can miss an AP entirely — which reads as "the
+     * network isn't there" when it is just quiet. Slow, but this only runs after a
+     * failure, where being right matters more than being quick. */
+    int found = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true, /*passive=*/false,
+        /*max_ms_per_chan=*/1000);
+    if (found < 0) {
+        /* Distinguished from "found nothing" on purpose: a failed scan says nothing about
+         * what is on the air, and reporting it as "no networks" sends you hunting for an
+         * antenna fault that isn't there. */
+        Serial.printf("[wifi]   scan failed (%d: %s)\n", found,
+            found == WIFI_SCAN_RUNNING ? "still running" : "scan error");
+        return;
+    }
+    if (found == 0) {
+        Serial.println("[wifi]   none found — out of range, or the antenna is unplugged.");
+        Serial.println("[wifi]   note: ESP32 is 2.4GHz-only and cannot see a 5GHz network.");
+        return;
+    }
+    bool target_seen = false;
+    for (int i = 0; i < found; i++) {
+        Serial.printf("[wifi]   %-32s ch%-3d %4ddBm %s\n", WiFi.SSID(i).c_str(), WiFi.channel(i),
+            (int)WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "secured");
+        if (WiFi.SSID(i) == WIFI_SSID) {
+            target_seen = true;
+        }
+    }
+    WiFi.scanDelete();
+
+    /* Comparing against the scan we already have, rather than a second filtered scan —
+     * the ssid-filter argument to scanNetworks() only exists on Arduino core 3.x. */
+    Serial.printf(
+        "[wifi]   \"%s\" was %sfound in that list.\n", WIFI_SSID, target_seen ? "" : "NOT ");
+}
+
 static bool connect_wifi()
 {
     Serial.printf("[wifi] connecting to \"%s\" ...\n", WIFI_SSID);
@@ -63,6 +114,7 @@ static bool connect_wifi()
     if (WiFi.status() != WL_CONNECTED) {
         Serial.printf("[wifi] failed after %lums (status %d)\n",
             (unsigned long)(millis() - started), (int)WiFi.status());
+        report_visible_networks();
         return false;
     }
 

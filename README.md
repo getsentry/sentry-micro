@@ -42,16 +42,19 @@ We interoperate with Sentry's **ingest and symbolication**, not with `sentry-nat
 
 ```
 src/                        the library
-  sentry_micro.h            public API — the only header you include
-  sentry_micro.cpp          init/shutdown and SDK state
+  sentry_micro.h            public API — the only header you include (C, plus the C++ layer)
+  sentry_micro.c            init/close and SDK state
+  sentry_micro.hpp          inline C++ wrapper, pulled in automatically by the header
+  sentry_micro_cxx.cpp      the one non-inline bit of it (the Arduino Serial logger)
   core/                     portable freestanding C: no Arduino, no ESP-IDF, host-testable
     sentry_boot.h           version, size limits
     sentry_dsn.{h,c}        DSN parsing, ingest URL, auth header
+    sentry_transport.{h,c}  the delivery interface
   device/                   chip-specific context collection
     sentry_device.h         the fields every event carries
     sentry_device_esp32.c   ESP-IDF implementation
   transport/
-    sentry_transport.h      the delivery interface
+    sentry_transport.hpp    C++ base class over the C interface
 test/                       host unit tests (Unity), run with `pio test -e native`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
@@ -59,9 +62,18 @@ partitions/                 reference partition tables (with a `coredump` partit
 platformio.ini              host test project (firmware builds live in the examples)
 ```
 
-The split between `core/` and `device/` is load-bearing rather than tidy: everything in
-`core/` compiles on a laptop, so DSN parsing — and later envelope construction — is tested in
-milliseconds by `pio test` instead of by flashing a board.
+Two splits are load-bearing rather than tidy:
+
+**`core/` vs `device/`.** Everything in `core/` compiles on a laptop, so DSN parsing — and
+later envelope construction — is tested in milliseconds by `pio test` instead of by flashing
+a board. `device/` is the porting boundary: when ESP8266 or nRF52 arrives, it gets a sibling
+of `sentry_device_esp32.c` and `core/` does not move.
+
+**C is the API; C++ is a wrapper.** The whole SDK, including the transport interface, is
+plain C, so it is usable from an ESP-IDF component with no C++ runtime. The C++ names are
+inline forwarders over the same state — `sentry::init()` *is* `sentry_init()`, and a
+`sentry::Transport` subclass hands the core the same `sentry_transport_t` vtable a C author
+would fill in by hand. There is one representation, not two that can drift.
 
 ## Quickstart
 
@@ -96,6 +108,8 @@ Using it in your own firmware — add to your `platformio.ini`:
 lib_deps = https://github.com/getsentry/sentry-micro.git
 ```
 
+Arduino / C++:
+
 ```cpp
 #include <sentry_micro.h>
 
@@ -107,39 +121,74 @@ void setup() {
 }
 ```
 
-`sentry::init()` returns `false` on a bad DSN and leaves the SDK disabled rather than
-half-configured. Crash reporting must never be load-bearing: a firmware should always be able
-to ignore that return value and carry on.
+ESP-IDF / C — the same SDK, no C++ runtime required:
+
+```c
+#include <sentry_micro.h>
+
+sentry_options_t options;
+sentry_options_defaults(&options);           // C has no default member initialisers
+options.dsn = "https://<key>@<org>.ingest.sentry.io/<project>";
+options.release = "my-firmware@1.0.0";
+sentry_init(&options);
+```
+
+`init` returns `false` on a bad DSN and leaves the SDK disabled rather than half-configured.
+Crash reporting must never be load-bearing: a firmware should always be able to ignore that
+return value and carry on.
 
 ## Writing a transport
 
 Everything Sentry-specific has already happened by the time a transport is called: it gets a
 URL, two headers, and a byte buffer. A complete implementation is a POST and a status check.
 
+In C — one function pointer and a designated initialiser:
+
+```c
+static sentry_response_t my_send(void *ctx, const char *url, const sentry_headers_t *headers,
+                                 const uint8_t *body, size_t len) {
+    if (!my_post(url, headers->auth, headers->content_type, body, len)) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);  /* core buffers and retries */
+    }
+    return sentry_response_make(SENTRY_SEND_OK);
+}
+
+static sentry_transport_t my_transport = { .send = my_send };
+sentry_set_transport(&my_transport);
+```
+
+`is_available` and `name` may be left NULL — an omitted availability check means "always
+worth trying", not "never".
+
+In C++ — subclass and override:
+
 ```cpp
 class MyTransport : public sentry::Transport {
 public:
     sentry::Response send(const char *url, const sentry::Headers &h,
                           const uint8_t *body, size_t len) override {
-        if (!my_post(url, h.auth, h.content_type, body, len)) {
-            return sentry::SEND_UNAVAILABLE;   // core buffers and retries
-        }
-        return sentry::SEND_OK;
+        return my_post(url, h.auth, body, len) ? sentry::SEND_OK : sentry::SEND_UNAVAILABLE;
     }
     const char *name() const override { return "mine"; }
 };
+
+static MyTransport transport;      // must outlive the SDK — not a stack local
+sentry::set_transport(transport);
 ```
 
-`send()` returns a `Response` struct, but a `SendResult` converts implicitly, so a transport
-that only knows "it worked" writes the line above. A transport that *can* see response
-headers should fill in more, because the core cannot invent it:
+Both produce the same `sentry_transport_t` for the core to call; the C++ base class just
+fills its function pointers with trampolines back to your virtuals.
+
+`send()` returns a `Response`, but a bare result code converts to one, so a transport that
+only knows "it worked" writes the lines above. A transport that *can* see response headers
+should fill in more, because the core cannot invent it:
 
 ```cpp
 return sentry::Response(sentry::SEND_RATE_LIMITED, 429, retry_after_seconds * 1000);
 ```
 
-The struct exists so that new response facts can be added without changing a signature every
-transport implements — new fields carry defaults, so existing transports keep compiling.
+The struct exists so new response facts can be added without changing a signature every
+transport implements — new fields default to zero, which the core reads as "no information".
 
 `send()` may block. The core never calls it from `loop()` behind your back; see
 [Delivery model](#delivery-model) for what that means in practice.
