@@ -93,6 +93,9 @@ echo
 # confusing in the issue stream.
 export SENTRY_MICRO_BUILD_ID="$BUILD_ID"
 export SENTRY_MICRO_RELEASE="$RELEASE"
+# Shown as the module beside every frame. Named after the target so a fleet running several
+# variants stays readable in the issue stream.
+export SENTRY_MICRO_IMAGE_NAME="${ENVIRONMENT}.elf"
 
 ELF="${REPO_ROOT}/${PROJECT_DIR}/.pio/build/${ENVIRONMENT}/firmware.elf"
 

@@ -261,6 +261,7 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
             snprintf(
                 image_addr, sizeof(image_addr), "0x%llx", (unsigned long long)event->image_addr);
             sentry_json_kv_string(writer, "image_addr", image_addr);
+            sentry_json_kv_string_opt(writer, "code_file", event->image_name);
             if (event->image_size > 0) {
                 char image_size[24];
                 snprintf(image_size, sizeof(image_size), "0x%llx",

@@ -72,6 +72,11 @@ void sentry_options_defaults(sentry_options_t *options)
 #ifdef SENTRY_IMAGE_SIZE
     options->image_size = SENTRY_IMAGE_SIZE;
 #endif
+#ifdef SENTRY_IMAGE_NAME
+    options->image_name = SENTRY_IMAGE_NAME;
+#else
+    options->image_name = "firmware.elf";
+#endif
 }
 
 void sentry_set_logger(sentry_logger_fn logger) { g_logger = logger; }
@@ -332,6 +337,7 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
     event->build_id = g_state.options.build_id;
     event->image_addr = g_state.options.image_addr;
     event->image_size = g_state.options.image_size;
+    event->image_name = g_state.options.image_name;
 
     /* Sampled now rather than reused from init, so the numbers describe the moment the
      * event happened — which for a heap leak is the entire point. */

@@ -35,6 +35,7 @@ SECRETS = (
     ("SENTRY_MICRO_RELEASE", "SENTRY_RELEASE"),
     ("SENTRY_MICRO_IMAGE_ADDR", "SENTRY_IMAGE_ADDR"),
     ("SENTRY_MICRO_IMAGE_SIZE", "SENTRY_IMAGE_SIZE"),
+    ("SENTRY_MICRO_IMAGE_NAME", "SENTRY_IMAGE_NAME"),
 )
 
 # Values that must never be echoed: the WiFi password, and the DSN (which embeds a key that

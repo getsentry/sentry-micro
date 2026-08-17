@@ -108,6 +108,9 @@ typedef struct {
     uint64_t image_addr;
     uint64_t image_size;
 
+    /** Firmware image name, shown as the module beside each frame. Defaults to the env. */
+    const char *image_name;
+
     /** When true, the SDK narrates what it is doing through the logger. Off in production. */
     bool debug;
 } sentry_options_t;

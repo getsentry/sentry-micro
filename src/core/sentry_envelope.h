@@ -123,6 +123,15 @@ typedef struct {
      */
     uint64_t image_size;
 
+    /**
+     * Name of the firmware image, shown as the module column beside every frame.
+     *
+     * Purely cosmetic — matching is by `debug_id` — but without it every frame reads
+     * `<unknown>`, which looks like a symbolication failure rather than a missing label.
+     * Worth making distinct per build variant so a mixed fleet stays readable.
+     */
+    const char *image_name;
+
     /* Sampled at event time rather than at boot, so they describe the moment. */
     uint32_t free_heap_bytes;
     uint32_t min_free_heap_bytes;

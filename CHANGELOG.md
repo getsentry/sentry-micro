@@ -49,3 +49,5 @@
 - Events carry the real `image_addr`/`image_size` read from the linked ELF, which is what
   symbolication actually resolves against; `release.sh` now builds in two passes to obtain
   them.
+- Debug images carry a `code_file`, so frames show the firmware name instead of `<unknown>`
+  in the module column.

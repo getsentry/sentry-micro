@@ -10,12 +10,29 @@
 an ESP32 and delivers them to Sentry over *any* connectivity — WiFi directly, or by handing a
 fully-formed Sentry envelope to a companion app that just relays the bytes.
 
-> **Status: early prototype.** This is a Sentry hackweek project, not a released SDK. It
-> builds real Sentry envelopes on-device, delivers them over WiFi or a host relay, buffers
-> what it cannot send, and ships the debug files needed to symbolicate. What it does *not*
-> do yet is read a coredump — so events carry device context and reset reasons, not stack
-> frames. See [Roadmap](#roadmap) for the exact line, and
-> [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the full proposal.
+> **Status: early prototype.** This is a Sentry hackweek project, not a released SDK — but
+> it does the whole job end to end: an ESP32 panics, reboots, and the crash arrives in Sentry
+> as a **symbolicated backtrace with function names, file names, line numbers and source**,
+> over WiFi or relayed through a host. See [Roadmap](#roadmap) for what is and is not done,
+> and [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the proposal.
+
+This is a concrete answer to
+[sentry-native#915](https://github.com/getsentry/sentry-native/issues/915), where Sentry
+declined to port `sentry-native` to microcontrollers — it assumes virtual memory, a
+filesystem and threads — and floated that *"there might be a sentry-micro SDK at some
+point"*. The stated blocker was that community signal needed to be stronger. This is a
+working demonstration that the ingest and symbolication side already supports it.
+
+```
+StoreProhibited
+StoreProhibited at 0x4016984d, accessing 0x00000000
+
+  esp32dev.elf  0x4016984d  demo_crash_innermost (main.cpp:221)
+  esp32dev.elf  0x400d2e89  demo_crash_middle    (main.cpp:224)
+  esp32dev.elf  0x400d2e92  demo_crash_outer     (main.cpp:226)
+  esp32dev.elf  0x400d3637  setup                (main.cpp:412)
+  esp32dev.elf  0x400da349  loopTask             (main.cpp:42)
+```
 
 ## Why this is not `sentry-native`
 
@@ -492,6 +509,9 @@ Implemented today:
 - [x] Offline buffering with NVS and filesystem backends, `Retry-After` backoff
 - [x] Debug files uploaded and confirmed usable by Sentry (`symtab, debug, unwind`), indexed
       under the same `debug_id` the device reports
+- [x] Core dumps read on the next boot and reported as an exception with a stacktrace
+- [x] **Symbolicated end to end on hardware** — function, file, line and source, from a
+      deliberate null dereference on an ESP32-PICO-D4
 
 Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
 - [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication
