@@ -12,12 +12,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Pinned exactly: clang-format's output shifts between major versions, so an
+      # unpinned one would fail this job on untouched files after any upgrade.
+      - name: Install clang-format
+        run: pip install clang-format==22.1.8
+      - name: Check formatting
+        run: scripts/format.sh --check
+
   test:
     name: Host unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install PlatformIO
@@ -37,15 +52,15 @@ jobs:
       matrix:
         env: [esp32dev, esp32-s2, esp32-s3, esp32-c3, esp32-c6]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       # Toolchains are hundreds of megabytes and identical between runs; keyed on the
       # platformio.ini that pins them so a version bump invalidates the cache.
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.platformio/.cache

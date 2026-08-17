@@ -5,10 +5,15 @@
 #
 #   No AlwaysBreakAfterDefinitionReturnType — sentry-native is C; this codebase has a C++
 #   surface where a return type on its own line reads badly for member functions.
+#
+# NamespaceIndentation is also forced off. WebKit's default indents *inner* namespaces, and
+# every .cpp here is `namespace sentry { namespace { ... } }` — which would indent an entire
+# file body by 8 columns to convey nothing. sentry-native never hits this because it is C.
 BasedOnStyle: WebKit
 IndentWidth: 4
 IndentPPDirectives: AfterHash
 ColumnLimit: 100
 PointerAlignment: Right
+NamespaceIndentation: None
 InsertNewlineAtEOF: True
 SortIncludes: CaseInsensitive

@@ -52,8 +52,7 @@ public:
      * be called from a post-crash context where the heap is not trustworthy.
      */
     virtual SendResult send(
-        const char *url, const Headers &headers, const uint8_t *body, size_t len)
-        = 0;
+        const char *url, const Headers &headers, const uint8_t *body, size_t len) = 0;
 
     /**
      * Cheap, non-blocking "is there any point calling send() right now?".

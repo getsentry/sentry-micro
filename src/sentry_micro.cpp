@@ -5,7 +5,7 @@
 #include <string.h>
 
 #if defined(ARDUINO)
-#include <Arduino.h>
+#    include <Arduino.h>
 #endif
 
 namespace sentry {
@@ -29,7 +29,7 @@ struct State {
     bool enabled;
 };
 
-State g_state = {};
+State g_state = { };
 
 void debug_log(const char *fmt, ...)
 {
@@ -92,7 +92,7 @@ bool init(const Options &options)
     return true;
 }
 
-void shutdown() { g_state = State {}; }
+void shutdown() { g_state = State { }; }
 
 bool is_enabled() { return g_state.enabled; }
 

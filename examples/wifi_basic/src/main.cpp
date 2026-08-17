@@ -23,20 +23,20 @@
 
 /* Local, gitignored credentials. Absent in CI, where the values come from -D flags. */
 #if __has_include("secrets.h")
-#include "secrets.h"
+#    include "secrets.h"
 #endif
 
 #ifndef WIFI_SSID
-#define WIFI_SSID "your-wifi-ssid"
+#    define WIFI_SSID "your-wifi-ssid"
 #endif
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "your-wifi-password"
+#    define WIFI_PASSWORD "your-wifi-password"
 #endif
 #ifndef SENTRY_DSN
-#define SENTRY_DSN "https://examplePublicKey@o0.ingest.sentry.io/0"
+#    define SENTRY_DSN "https://examplePublicKey@o0.ingest.sentry.io/0"
 #endif
 #ifndef SENTRY_MICRO_DEBUG
-#define SENTRY_MICRO_DEBUG 0
+#    define SENTRY_MICRO_DEBUG 0
 #endif
 
 /* Identifies this build in Sentry, and is what debug files must be uploaded against. */
@@ -66,8 +66,8 @@ static bool connect_wifi()
         return false;
     }
 
-    Serial.printf("[wifi] connected: ip=%s rssi=%ddBm in %lums\n", WiFi.localIP().toString().c_str(),
-        (int)WiFi.RSSI(), (unsigned long)(millis() - started));
+    Serial.printf("[wifi] connected: ip=%s rssi=%ddBm in %lums\n",
+        WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (unsigned long)(millis() - started));
     return true;
 }
 

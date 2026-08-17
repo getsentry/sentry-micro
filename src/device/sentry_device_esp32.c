@@ -19,25 +19,25 @@
  * since IDF 4 and cost nothing at runtime.
  */
 #if defined(CONFIG_IDF_TARGET_ESP32)
-#define SENTRY_CHIP_MODEL "ESP32"
+#    define SENTRY_CHIP_MODEL "ESP32"
 #elif defined(CONFIG_IDF_TARGET_ESP32S2)
-#define SENTRY_CHIP_MODEL "ESP32-S2"
+#    define SENTRY_CHIP_MODEL "ESP32-S2"
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-#define SENTRY_CHIP_MODEL "ESP32-S3"
+#    define SENTRY_CHIP_MODEL "ESP32-S3"
 #elif defined(CONFIG_IDF_TARGET_ESP32C2)
-#define SENTRY_CHIP_MODEL "ESP32-C2"
+#    define SENTRY_CHIP_MODEL "ESP32-C2"
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
-#define SENTRY_CHIP_MODEL "ESP32-C3"
+#    define SENTRY_CHIP_MODEL "ESP32-C3"
 #elif defined(CONFIG_IDF_TARGET_ESP32C5)
-#define SENTRY_CHIP_MODEL "ESP32-C5"
+#    define SENTRY_CHIP_MODEL "ESP32-C5"
 #elif defined(CONFIG_IDF_TARGET_ESP32C6)
-#define SENTRY_CHIP_MODEL "ESP32-C6"
+#    define SENTRY_CHIP_MODEL "ESP32-C6"
 #elif defined(CONFIG_IDF_TARGET_ESP32H2)
-#define SENTRY_CHIP_MODEL "ESP32-H2"
+#    define SENTRY_CHIP_MODEL "ESP32-H2"
 #elif defined(CONFIG_IDF_TARGET_ESP32P4)
-#define SENTRY_CHIP_MODEL "ESP32-P4"
+#    define SENTRY_CHIP_MODEL "ESP32-P4"
 #else
-#define SENTRY_CHIP_MODEL "ESP32-unknown"
+#    define SENTRY_CHIP_MODEL "ESP32-unknown"
 #endif
 
 static sentry_reset_reason_t map_reset_reason(esp_reset_reason_t reason)
