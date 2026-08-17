@@ -287,10 +287,16 @@ export SENTRY_MICRO_DSN='https://...'
 scripts/release.sh -e esp32dev
 ```
 
-The token needs the `project:write` scope (to upload debug files) and `project:releases`
-(to register the release). An organization auth token has both by default and is what CI
-should use. `sentry-cli login` works too, for a browser flow on a workstation. Pass
-`--no-upload` to build and stamp without talking to Sentry at all.
+An **organization auth token** (scope `org:ci`) is the right kind and is what CI should use;
+it embeds its own org, which is why the script does not pass one. `sentry-cli login` works
+too for a browser flow. Pass `--no-upload` to build and stamp without talking to Sentry.
+
+Verified against a real project — `sentry-cli debug-files check` reports the uploaded ELF as
+`Usable: yes` with `symtab, debug, unwind`, under the same `debug_id` the device puts in
+`debug_meta`. One caveat worth knowing before the frames land: it also reports
+`Arch: unknown` for Xtensa, which is not a recognised architecture in Sentry's symbolic
+library. Whether that affects resolution can only be answered once real frames exist — the
+RISC-V targets (C3/C6) are unlikely to have the same question.
 
 **Do not use `-Wl,--build-id`.** On ESP32 the linker marks the note `ALLOC` and places it at
 the start of IRAM, pushing `.iram0.vectors` off `0x40080000`:
@@ -474,6 +480,9 @@ Implemented today:
 - [x] Envelope accepted by production ingest (`HTTP 200`, event id echoed back)
 - [x] `SerialTransport` + host relay script — a device with no network reporting through USB,
       validating the relay architecture the BLE transport will reuse
+- [x] Offline buffering with NVS and filesystem backends, `Retry-After` backoff
+- [x] Debug files uploaded and confirmed usable by Sentry (`symtab, debug, unwind`), indexed
+      under the same `debug_id` the device reports
 
 Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
 - [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication

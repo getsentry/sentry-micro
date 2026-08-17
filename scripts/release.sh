@@ -121,47 +121,51 @@ if [ "$DO_UPLOAD" -eq 1 ]; then
         exit 1
     fi
 
-    # Derive org and project from the DSN rather than making the user configure them twice.
-    # sentry-cli accepts numeric IDs as well as slugs, and both are already in the DSN:
-    # the org is the `o<digits>` host prefix, the project is the path.
-    if [ -z "${SENTRY_ORG:-}" ] || [ -z "${SENTRY_PROJECT:-}" ]; then
+    # Derive the project from the DSN rather than making the user configure it twice; the
+    # DSN already carries it, and sentry-cli accepts numeric ids as well as slugs.
+    #
+    # The org is deliberately NOT derived. An organization auth token embeds its own org and
+    # overrides anything passed on the command line — sentry-cli warns and ignores it — so
+    # sending a DSN-derived org produced a confusing warning on every upload while changing
+    # nothing. It is passed through only when the user set SENTRY_ORG themselves, which is
+    # what a personal (non-org) token needs.
+    if [ -z "${SENTRY_PROJECT:-}" ]; then
         if [ -n "${SENTRY_MICRO_DSN:-}" ]; then
             eval "$(python3 - "$SENTRY_MICRO_DSN" <<'PYEOF'
-import re, sys
+import sys
 from urllib.parse import urlparse
-dsn = urlparse(sys.argv[1])
-host = dsn.hostname or ""
-org = re.match(r"o(\d+)\.", host)
-project = (dsn.path or "").strip("/").split("/")[-1]
-if org:
-    print(f'export SENTRY_ORG="{org.group(1)}"')
+project = (urlparse(sys.argv[1]).path or "").strip("/").split("/")[-1]
 if project:
     print(f'export SENTRY_PROJECT="{project}"')
 PYEOF
 )"
         fi
     fi
-    if [ -z "${SENTRY_ORG:-}" ] || [ -z "${SENTRY_PROJECT:-}" ]; then
+    if [ -z "${SENTRY_PROJECT:-}" ]; then
         echo
-        echo "error: could not determine org/project." >&2
-        echo "       set SENTRY_MICRO_DSN, or export SENTRY_ORG and SENTRY_PROJECT." >&2
+        echo "error: could not determine the project." >&2
+        echo "       set SENTRY_MICRO_DSN, or export SENTRY_PROJECT." >&2
         exit 1
     fi
-    echo "  org       ${SENTRY_ORG}"
-    echo "  project   ${SENTRY_PROJECT}"
+    # Empty unless the user chose one, in which case it is passed through unquoted-expanded.
+    ORG_ARGS=""
+    [ -n "${SENTRY_ORG:-}" ] && ORG_ARGS="--org ${SENTRY_ORG}"
+    echo "  project   ${SENTRY_PROJECT}${SENTRY_ORG:+ (org ${SENTRY_ORG})}"
 
     echo
     echo "→ uploading debug files to Sentry"
     # --include-sources embeds the source text, so Sentry shows the offending line and not
     # just its number. Harmless for a private project; drop it if the code is not yours.
+    # shellcheck disable=SC2086 # ORG_ARGS is intentionally word-split: empty means "omit".
     sentry-cli debug-files upload --include-sources \
-        --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "$ELF"
+        $ORG_ARGS --project "$SENTRY_PROJECT" "$ELF"
 
     echo
     echo "→ registering the release"
     # Lets Sentry associate events with this build even before any crash arrives. Not fatal
     # if it fails — the debug files are what symbolication actually needs.
-    sentry-cli releases new --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "$RELEASE" \
+    # shellcheck disable=SC2086
+    sentry-cli releases new $ORG_ARGS --project "$SENTRY_PROJECT" "$RELEASE" \
         >/dev/null 2>&1 || echo "  (could not register the release; debug files are uploaded)"
 fi
 
