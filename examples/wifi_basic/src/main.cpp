@@ -20,6 +20,7 @@
 #include <WiFi.h>
 
 #include <sentry_micro.h>
+#include <transport/sentry_transport_serial.hpp>
 #include <transport/sentry_transport_wifi.hpp>
 
 /* Local, gitignored credentials. Absent in CI, where the values come from -D flags. */
@@ -55,8 +56,9 @@
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 
-/* File scope, not a local: the SDK stores a pointer to it, so it has to outlive setup(). */
-static sentry::WiFiTransport transport;
+/* File scope, not locals: the SDK stores a pointer, so these have to outlive setup(). */
+static sentry::WiFiTransport wifi_transport;
+static sentry::SerialTransport serial_transport;
 
 /**
  * List what the radio can actually see.
@@ -269,21 +271,26 @@ void setup()
         Serial.println("[sentry] init failed — check SENTRY_DSN in src/secrets.h");
     }
 
-    /* The transport only needs registering once. It refuses any host but the DSN's, so
-     * there is nothing to configure for that. For production, also call
-     * transport.set_ca_cert() — see the header for why it is not on by default. */
-    sentry::set_transport(transport);
-
     print_sentry_state();
 
-    /* Reporting needs the radio up, so this has to follow the connect rather than lead it.
-     * A real firmware would buffer the event instead and flush it when a route appears;
-     * that buffer is the next milestone. */
+    /*
+     * Pick a route: WiFi if the device has one, otherwise relay through whatever is on the
+     * other end of the USB cable (scripts/serial_relay.py). This is a hand-rolled version
+     * of the auto-selection the SDK will eventually do itself — "WiFi if connected, else a
+     * registered relay, else buffer to flash" — and it is what makes a board with no
+     * usable network still testable.
+     */
     if (connect_wifi()) {
-        report_boot();
+        /* For production also call wifi_transport.set_ca_cert(); see the header for why
+         * certificate verification is not on by default. */
+        sentry::set_transport(wifi_transport);
+        Serial.println("[sentry] transport: wifi");
     } else {
-        Serial.println("[sentry] no network — nothing to send over yet");
+        sentry::set_transport(serial_transport);
+        Serial.println("[sentry] transport: serial relay (run scripts/serial_relay.py)");
     }
+
+    report_boot();
 }
 
 void loop()

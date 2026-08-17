@@ -24,3 +24,8 @@
 - `WiFiTransport`: HTTPS POST straight to ingest, refusing any host but the DSN's (exact
   match, no redirects), with `Retry-After` / `X-Sentry-Rate-Limits` translated into a
   backoff the core can act on.
+- `SerialTransport` plus `scripts/serial_relay.py`: relay envelopes through the host on the
+  other end of the USB cable, for devices with no usable network. Same architecture as the
+  planned BLE relay, over a link that is trivial to debug.
+- Base64 encoder in the portable core, streamed in fixed chunks so memory use does not grow
+  with envelope size.

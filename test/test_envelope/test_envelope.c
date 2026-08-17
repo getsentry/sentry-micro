@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unity.h>
 
+#include "sentry_base64.h"
 #include "sentry_envelope.h"
 #include "sentry_json.h"
 
@@ -303,9 +304,89 @@ static void test_rejects_an_event_without_an_id(void)
     TEST_ASSERT_EQUAL_STRING("", buf);
 }
 
+/* ── base64 ───────────────────────────────────────────────────────────────── */
+
+static void test_encodes_base64_with_padding(void)
+{
+    char out[32];
+    /* The RFC 4648 test vectors: each tail length exercises a different padding case. */
+    TEST_ASSERT_EQUAL_size_t(0, sentry_base64_encode(out, sizeof(out), (const uint8_t *)"", 0));
+    TEST_ASSERT_EQUAL_STRING("", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"f", 1);
+    TEST_ASSERT_EQUAL_STRING("Zg==", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"fo", 2);
+    TEST_ASSERT_EQUAL_STRING("Zm8=", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"foo", 3);
+    TEST_ASSERT_EQUAL_STRING("Zm9v", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"foob", 4);
+    TEST_ASSERT_EQUAL_STRING("Zm9vYg==", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"fooba", 5);
+    TEST_ASSERT_EQUAL_STRING("Zm9vYmE=", out);
+    sentry_base64_encode(out, sizeof(out), (const uint8_t *)"foobar", 6);
+    TEST_ASSERT_EQUAL_STRING("Zm9vYmFy", out);
+}
+
+static void test_encodes_all_byte_values(void)
+{
+    /* An envelope is text today, but attachments will not be, and a sign-extension bug in
+     * the >= 0x80 range would be invisible against ASCII-only test data. */
+    uint8_t all[256];
+    for (int i = 0; i < 256; i++) {
+        all[i] = (uint8_t)i;
+    }
+    char out[SENTRY_BASE64_ENCODED_LEN(256) + 1];
+    size_t needed = sentry_base64_encode(out, sizeof(out), all, sizeof(all));
+    TEST_ASSERT_EQUAL_size_t(344, needed);
+    TEST_ASSERT_EQUAL_size_t(needed, strlen(out));
+    TEST_ASSERT_EQUAL_STRING_LEN("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIj", out, 48);
+    /* 256 bytes is 85 whole triples (bytes 0..254) plus a 1-byte tail, so the last group
+     * encodes 0xFF alone: 0b111111 -> '/', 0b110000 -> 'w', then two pad characters. */
+    TEST_ASSERT_EQUAL_STRING("/w==", out + 340);
+}
+
+static void test_base64_chunking_matches_a_single_pass(void)
+{
+    /* The serial transport encodes in 48-byte chunks to keep stack use constant. That is
+     * only valid because 48 is a multiple of 3, so padding lands solely on the final
+     * chunk; this asserts the property the transport depends on. */
+    uint8_t data[200];
+    for (size_t i = 0; i < sizeof(data); i++) {
+        data[i] = (uint8_t)(i * 7 + 3);
+    }
+    char whole[SENTRY_BASE64_ENCODED_LEN(sizeof(data)) + 1];
+    sentry_base64_encode(whole, sizeof(whole), data, sizeof(data));
+
+    char chunked[SENTRY_BASE64_ENCODED_LEN(sizeof(data)) + 1];
+    char piece[SENTRY_BASE64_ENCODED_LEN(48) + 1];
+    chunked[0] = '\0';
+    for (size_t offset = 0; offset < sizeof(data); offset += 48) {
+        size_t take = sizeof(data) - offset;
+        if (take > 48) {
+            take = 48;
+        }
+        sentry_base64_encode(piece, sizeof(piece), data + offset, take);
+        strcat(chunked, piece);
+    }
+    TEST_ASSERT_EQUAL_STRING(whole, chunked);
+}
+
+static void test_base64_refuses_a_buffer_it_cannot_fill(void)
+{
+    char small[4];
+    /* Reports the requirement, writes nothing: a truncated base64 string decodes to a
+     * truncated envelope, which is worse than sending none. */
+    TEST_ASSERT_EQUAL_size_t(
+        8, sentry_base64_encode(small, sizeof(small), (const uint8_t *)"foob", 4));
+    TEST_ASSERT_EQUAL_STRING("", small);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_encodes_base64_with_padding);
+    RUN_TEST(test_encodes_all_byte_values);
+    RUN_TEST(test_base64_chunking_matches_a_single_pass);
+    RUN_TEST(test_base64_refuses_a_buffer_it_cannot_fill);
     RUN_TEST(test_writes_a_nested_document);
     RUN_TEST(test_escapes_json_strings);
     RUN_TEST(test_passes_utf8_through_unchanged);

@@ -181,6 +181,48 @@ Footprint on `esp32dev` with the WiFi transport, TLS and the full example:
 **923,937 bytes flash** (50% of a 1.75 MB OTA slot) and **47,836 bytes RAM** (15% of 320 KB).
 mbedTLS dominates both.
 
+## Serial relay transport — when the device has no network
+
+A device that cannot reach the internet is still plugged into a machine that can. This hands
+the whole request over the USB cable and lets a small script perform it:
+
+```cpp
+static sentry::SerialTransport transport;
+sentry::set_transport(transport);
+```
+
+```bash
+export SENTRY_MICRO_DSN='https://...'
+scripts/serial_relay.py --port /dev/cu.usbserial-XXXX     # replaces `pio device monitor`
+```
+
+The script passes device logs through to your terminal and answers relay requests:
+
+```
+[sentry] transport: serial relay
+[relay] 781 bytes -> https://o…ingest.us.sentry.io/api/…/envelope/
+[relay] HTTP 200 in 470ms
+[sentry] delivered (http 200)
+```
+
+This is worth more than bench convenience. **It is the same architecture as the BLE relay** —
+the device builds a complete Sentry request and something else moves the bytes — validated
+over a link that is trivial to debug. The script knows nothing about Sentry beyond "POST
+these bytes to this URL", which is exactly the property that will let a companion app support
+the SDK in ~20 lines. The device-side code is identical either way.
+
+Every field is base64 because a URL and an auth header contain spaces and an envelope is
+ndjson that *contains newlines*; encoding removes every framing question. The device encodes
+in fixed 48-byte chunks straight to the port, so a 4 KB envelope costs 65 bytes of stack
+rather than the 5.4 KB a buffered encode would need out of the loop task's 8 KB.
+
+**The whitelist is the point, not a nicety.** The device is asking another machine to POST
+arbitrary bytes to an arbitrary URL. The relay refuses anything but the DSN's host over
+https — exact match — so a buggy or hostile device cannot use its host as an open proxy.
+That is non-negotiable when the relay is a user's *phone*, and it is enforced identically
+here. Verified refused: `evil.com`, `…sentry.io.evil.com`, `evil-…sentry.io`, a plaintext
+downgrade, `https://…sentry.io@evil.com/`, `file:///etc/passwd`, and `169.254.169.254`.
+
 ## Writing a transport
 
 Everything Sentry-specific has already happened by the time a transport is called: it gets a
@@ -342,6 +384,8 @@ Implemented today:
 
 - [x] `WiFiTransport` — HTTPS POST straight to ingest, host-whitelisted against the DSN
 - [x] Envelope accepted by production ingest (`HTTP 200`, event id echoed back)
+- [x] `SerialTransport` + host relay script — a device with no network reporting through USB,
+      validating the relay architecture the BLE transport will reuse
 
 Next, roughly in the order the [proposal](ESP32_SENTRY_HACKWEEK.md) lays out:
 - [ ] Coredump summary → native frames + `debug_meta` for server-side symbolication
