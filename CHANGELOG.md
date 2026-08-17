@@ -29,3 +29,6 @@
   planned BLE relay, over a link that is trivial to debug.
 - Base64 encoder in the portable core, streamed in fixed chunks so memory use does not grow
   with envelope size.
+- Offline ring buffer (`core/sentry_buffer.*`): portable ring policy over a pluggable
+  storage vtable, so undelivered envelopes survive a reboot. Host-tested including wrapped
+  recovery, corrupt metadata, and failed writes. NVS storage and SDK wiring still to come.
