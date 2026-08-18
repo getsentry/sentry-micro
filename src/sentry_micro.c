@@ -271,7 +271,14 @@ sentry_response_t sentry_capture_message(sentry_level_t level, const char *messa
         return sentry_response_make(SENTRY_SEND_REJECTED);
     }
 
-    return sentry_send_envelope((const uint8_t *)envelope, needed);
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+
+    /* Restart the repeat window from here, not from where this call began. A send with no
+     * route blocks for the transport's timeout, which is longer than the window itself —
+     * so measuring from the start means the window is always already over by the time the
+     * caller loops round, and identical messages are never suppressed. */
+    sentry_throttle_settle(&g_state.throttle, sentry_device_uptime_ms());
+    return response;
 }
 
 uint32_t sentry_suppressed_count(void) { return sentry_throttle_suppressed(&g_state.throttle); }

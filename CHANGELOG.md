@@ -119,3 +119,11 @@
 - The "built but never exercised on hardware" list in README.md was stale: it still claimed
   `WiFiTransport` had never delivered an event and that the buffer's power-cycle path was
   host-tested only. Both were confirmed on hardware, and ONBOARDING.md already said so.
+- The capture throttle's repeat window now runs from when the previous identical message
+  *finished* being sent, not from when the call began. Found on hardware: `capture_message()`
+  sends inline, and a send with no route blocks for the transport's timeout — 15.2 s
+  measured, against `SerialTransport`'s 15 s default and a 10 s window. Timed from the start
+  of the call the window had always already elapsed by the time the caller looped round, so
+  no repeat was ever suppressed: a twenty-iteration loop produced seventeen events and
+  evicted thirteen envelopes from the offline buffer. Timing from completion makes the rule
+  hold however slow the transport is.

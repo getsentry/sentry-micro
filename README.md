@@ -217,9 +217,17 @@ off with `0`:
 | `max_messages_per_minute` | `10` | Ceiling on everything else, whatever it says |
 
 Repeats are checked first, so a message stuck in a loop cannot spend the budget a
-*different* message needed. The window is measured from the last message that was **sent**,
-not the last one attempted — a caller faster than the window still reports once per window
-rather than going silent after the first event.
+*different* message needed. The window runs from the moment the previous identical message
+**finished being sent**, and a suppressed call never moves it — so a caller faster than the
+window still reports once per window rather than going silent after the first event.
+
+Timing it from completion rather than from the start of the call is what makes the rule
+work at all. `capture_message()` sends inline, and on a device with no route one send
+blocks for the transport's timeout — 15.2 s measured on hardware, against `SerialTransport`'s
+15 s default. Measured from the start of the call, a window shorter than that has always
+already elapsed by the time the caller loops round, so nothing is ever suppressed. That was
+found on a board, not in review: a twenty-iteration loop produced seventeen events and
+evicted thirteen envelopes from the offline buffer.
 
 `sentry_capture_message()` returns `SENTRY_SEND_RATE_LIMITED` when the throttle drops
 something, and `sentry_suppressed_count()` says how many it has dropped since init. Crash

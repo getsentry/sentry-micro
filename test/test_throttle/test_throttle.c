@@ -73,6 +73,48 @@ static void test_a_tight_loop_still_reports_once_per_window(void)
     TEST_ASSERT_EQUAL_UINT32(5, allowed);
 }
 
+static void test_a_slow_send_does_not_consume_the_repeat_window(void)
+{
+    sentry_throttle_t throttle;
+    sentry_throttle_init(&throttle, 100, 10000);
+
+    /* The case hardware found. capture_message() sends inline, and a send with no route
+     * blocks for the transport's timeout — 15.2s measured, against a 10s window. Timed
+     * from the start of the previous call the window has always already elapsed, so every
+     * repeat gets through: 17 events from a 20-iteration loop, and 13 envelopes evicted
+     * from the offline buffer. Settling on completion is what makes the rule hold however
+     * slow the transport is. */
+    TEST_ASSERT_TRUE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_ERROR, "no route", 0));
+    sentry_throttle_settle(&throttle, 15200); /* the send took 15.2 seconds */
+
+    TEST_ASSERT_FALSE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_ERROR, "no route", 15200));
+    TEST_ASSERT_FALSE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_ERROR, "no route", 25199));
+    TEST_ASSERT_TRUE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_ERROR, "no route", 25200));
+}
+
+static void test_settling_a_suppressed_message_does_not_extend_its_window(void)
+{
+    sentry_throttle_t throttle;
+    sentry_throttle_init(&throttle, 100, 1000);
+
+    TEST_ASSERT_TRUE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_INFO, "once", 0));
+    sentry_throttle_settle(&throttle, 0);
+    /* A suppressed call does no work and so has nothing to settle; if it moved the mark
+     * anyway, a fast loop would push the window forward forever and go silent. */
+    TEST_ASSERT_FALSE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_INFO, "once", 500));
+    TEST_ASSERT_TRUE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_INFO, "once", 1000));
+}
+
+static void test_settling_without_a_previous_message_is_harmless(void)
+{
+    sentry_throttle_t throttle;
+    init_default(&throttle);
+
+    sentry_throttle_settle(&throttle, 5000);
+    sentry_throttle_settle(NULL, 5000);
+    TEST_ASSERT_TRUE(sentry_throttle_allow(&throttle, SENTRY_LEVEL_INFO, "first", 5000));
+}
+
 static void test_a_repeat_does_not_spend_the_volume_budget(void)
 {
     sentry_throttle_t throttle;
@@ -181,6 +223,9 @@ int main(void)
     RUN_TEST(test_suppresses_an_immediate_repeat);
     RUN_TEST(test_lets_the_same_message_through_again_after_the_window);
     RUN_TEST(test_a_tight_loop_still_reports_once_per_window);
+    RUN_TEST(test_a_slow_send_does_not_consume_the_repeat_window);
+    RUN_TEST(test_settling_a_suppressed_message_does_not_extend_its_window);
+    RUN_TEST(test_settling_without_a_previous_message_is_harmless);
     RUN_TEST(test_a_repeat_does_not_spend_the_volume_budget);
     RUN_TEST(test_distinct_messages_hit_the_per_minute_ceiling);
     RUN_TEST(test_the_volume_budget_refills_next_window);

@@ -41,10 +41,11 @@ bool sentry_throttle_allow(
 
     /* Rule 1: the same message, again, too soon.
      *
-     * `last_digest_ms` deliberately advances only when a message is *allowed*, not on every
-     * suppressed repeat. Sliding it forward would mean a loop calling faster than the
-     * window never sends a second event at all — the failure would go quiet rather than
-     * being reported once per window, which is the opposite of what this is for. */
+     * `last_digest_ms` advances when a message is allowed and again when it settles, but
+     * never on a suppressed repeat. Sliding it forward on every suppressed call would mean
+     * a loop calling faster than the window never sends a second event at all — the failure
+     * would go quiet rather than being reported once per window, which is the opposite of
+     * what this is for. */
     const char *text = message ? message : "";
     uint32_t digest = digest_of(level, text);
     if (throttle->repeat_window_ms > 0 && throttle->has_last_digest
@@ -81,6 +82,16 @@ bool sentry_throttle_allow(
     throttle->last_digest_ms = now_ms;
     throttle->has_last_digest = true;
     return true;
+}
+
+void sentry_throttle_settle(sentry_throttle_t *throttle, uint64_t now_ms)
+{
+    /* Only meaningful for a message that was allowed; there is nothing else it could be
+     * describing, and moving the mark for a suppressed one would extend a window the
+     * caller never spent any time on. */
+    if (throttle && throttle->has_last_digest) {
+        throttle->last_digest_ms = now_ms;
+    }
 }
 
 uint32_t sentry_throttle_suppressed(const sentry_throttle_t *throttle)

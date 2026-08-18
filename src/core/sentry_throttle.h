@@ -13,9 +13,19 @@
  *
  * Two rules, in this order:
  *
- *   1. **Repeats.** The same message at the same level, within `repeat_window_ms`, is
- *      suppressed. This is the failing-sensor case exactly, and it is checked first so a
- *      repeat does not consume the budget a *different* message could have used.
+ *   1. **Repeats.** The same message at the same level, within `repeat_window_ms` of the
+ *      last one *finishing*, is suppressed. This is the failing-sensor case exactly, and
+ *      it is checked first so a repeat does not consume the budget a *different* message
+ *      could have used.
+ *
+ *      "Finishing" rather than "starting" is not a detail. `sentry_capture_message()`
+ *      sends inline, and on a device with no route one send blocks for as long as the
+ *      transport's timeout — measured at 15.2 s on hardware, against `SerialTransport`'s
+ *      15 s default. Timed from the start of the previous call, a window shorter than that
+ *      can never elapse *during* a send, so every repeat lands outside it and nothing is
+ *      ever suppressed. That was not theoretical: a 20-iteration loop produced 17 events
+ *      and evicted 13 envelopes from the offline buffer. Timing from completion makes the
+ *      rule independent of how slow the transport is.
  *   2. **Volume.** At most `max_per_minute` messages get through in any 60-second window,
  *      whatever they say. The backstop for code that generates unbounded distinct
  *      messages — an error string with a counter in it, say, which rule 1 cannot catch.
@@ -69,6 +79,15 @@ void sentry_throttle_init(
  */
 bool sentry_throttle_allow(
     sentry_throttle_t *throttle, sentry_level_t level, const char *message, uint64_t now_ms);
+
+/**
+ * Mark the allowed message as finished, restarting its repeat window from `now_ms`.
+ *
+ * Call after the send returns. Skipping it is safe — the window then runs from when the
+ * capture started, which is what this did before and is merely less effective — so a
+ * caller that forgets degrades rather than breaks.
+ */
+void sentry_throttle_settle(sentry_throttle_t *throttle, uint64_t now_ms);
 
 /**
  * How many captures have been dropped since init.
