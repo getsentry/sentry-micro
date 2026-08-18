@@ -66,6 +66,12 @@ PLATFORMIO_BUILD_FLAGS='-D SENTRY_DEMO_CRASH=1' scripts/release.sh -e esp32dev -
 The board crashes once per power-on, reboots, reports the crash on the next boot, and erases
 the core dump once it is delivered.
 
+Reflashing to get one crash costs a minute at 115200 baud. To crash on demand instead, build
+with a button pin — `-D SENTRY_CRASH_BUTTON_PIN=39` is the M5Stack's left-hand button — and
+press it whenever you want the loop to run again. On a bare devkit note that GPIO 34-39 are
+input-only with no internal pull-up, so that pin needs an external pull-up or it floats and
+crashes at random.
+
 ## Traps
 
 Each of these cost real time. None of them announce themselves.
@@ -97,6 +103,20 @@ broken because only the four default envs were built. `pio run` covers four;
 `pio run -e esp32-c6` is the fifth and is not in `default_envs` because it pulls a separate
 toolchain.
 
+**A scan that is too thorough always fails.** Arduino's `scanNetworks()` waits a hard-coded
+10s and returns `-2` if the scan has not finished, whatever dwell you asked it for. An active
+scan visits ~13 channels, so anything above ~750ms per channel can never succeed — and the
+failed call leaves `WIFI_SCANNING_BIT` set, so every retry afterwards returns `-1`
+("still running") and no amount of resetting the radio clears it. The diagnostic that exists
+to tell "wrong password" from "5 GHz network" was broken this way and failed 100% of the time.
+
+**The image measurements move when you bake them in.** `release.sh` compiles `image_addr` and
+`image_size` into the firmware, which relinks, which changes the size — on Xtensa a large
+constant moves from a two-byte `movi.n` to a four-byte literal-pool entry. Two passes are not
+always enough, so the script iterates to a fixpoint and refuses to ship if it never settles.
+A firmware reporting the previous pass's size is exactly the silent-symbolication-failure
+class of bug above.
+
 **Some USB-UART bridges cannot renegotiate baud.** On the M5Stack (FTDI FT232R) both 921600
 and 460800 die with "Unable to verify flash chip connection" immediately after esptool reports
 "Changed"; 115200 works. Hence `upload_speed = 115200` on `esp32dev`.
@@ -120,9 +140,20 @@ CI runs the host tests, a format check, and all five variant builds on every pus
 
 Written and tested, never actually run on hardware — check before trusting:
 
-- **`WiFiTransport` has never delivered an event.** No 2.4 GHz network was reachable, so every
-  on-device delivery so far went through the serial relay. The code path is exercised only by
-  compilation.
-- **The buffer's across-a-power-cycle path.** It has been shown to persist and drain within one
-  boot; surviving an actual reboot is covered only by host tests against an in-memory store.
 - **The whole RISC-V core dump reader.** Compiles, matches the ESP-IDF struct, never executed.
+  This is the big one: no C3 or C6 has ever run this code. If you have one of those boards,
+  start here (SDK-1388).
+- **Every board except the classic ESP32.** The S2, S3, C3 and C6 are covered by compilation
+  only. All five variants build; only `esp32dev` has been flashed.
+- **TLS certificate verification.** `WiFiTransport` runs with verification off unless you call
+  `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
+
+Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
+
+- **`WiFiTransport` delivers.** Boot events and crash reports both POST straight to ingest and
+  come back `200`.
+- **Crash -> reboot -> report -> symbolicate.** A null-pointer store three calls deep is
+  recovered from the core dump partition on the next boot and reported with all five frames.
+- **The buffer survives a reboot.** Two envelopes written with no network reachable were
+  recovered from NVS across resets *and* across a reflash, then flushed once the radio came
+  up: `flushed 2 envelopes, 0 still waiting`.

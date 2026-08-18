@@ -48,6 +48,38 @@
 #    define SENTRY_DEMO_CRASH 0
 #endif
 
+/*
+ * Build with -D SENTRY_CRASH_BUTTON_PIN=<gpio> to crash on a button press instead of (or
+ * as well as) on a timer.
+ *
+ * Worth having because the alternative is a reflash per crash, and on a classic ESP32 at
+ * 115200 baud that is a minute of waiting to test a five-second path. With a button the
+ * whole crash -> reboot -> report -> symbolicate loop is repeatable on demand, which is
+ * what you want when checking whether a change to the coredump reader still produces a
+ * usable backtrace.
+ *
+ * 39 is the M5Stack's left-hand button. Note that GPIO 34-39 on the classic ESP32 are
+ * input-only and have *no* internal pull-up, so on a bare devkit this pin needs an
+ * external pull-up and a button to ground — otherwise it floats and crashes at random,
+ * which looks alarmingly like a real bug.
+ */
+#ifndef SENTRY_CRASH_BUTTON_PIN
+#    define SENTRY_CRASH_BUTTON_PIN -1
+#endif
+/* Active-low by default: a button to ground against a pull-up is the usual wiring. */
+#ifndef SENTRY_CRASH_BUTTON_ACTIVE_LOW
+#    define SENTRY_CRASH_BUTTON_ACTIVE_LOW 1
+#endif
+
+/* Build with -D SENTRY_DEMO_SCAN=1 to list visible networks on every boot, not just
+ * after a failed connect. */
+#ifndef SENTRY_DEMO_SCAN
+#    define SENTRY_DEMO_SCAN 0
+#endif
+
+/* The deliberate-crash helpers are compiled in for either trigger. */
+#define SENTRY_DEMO_CRASH_AVAILABLE (SENTRY_DEMO_CRASH || SENTRY_CRASH_BUTTON_PIN >= 0)
+
 /* Identifies this build in Sentry. Set by scripts/release.sh so the release the firmware
  * reports is the same one the debug files were uploaded under; the fallback only applies to
  * a plain `pio run`. */
@@ -88,12 +120,40 @@ static void report_visible_networks()
     delay(100);
 
     Serial.println("[wifi] scanning for 2.4GHz networks in range ...");
-    /* show_hidden, and a longer dwell than the 300ms default. A beacon interval is ~100ms,
-     * so a short dwell on a busy channel can miss an AP entirely — which reads as "the
-     * network isn't there" when it is just quiet. Slow, but this only runs after a
-     * failure, where being right matters more than being quick. */
+    /*
+     * A longer dwell than the 300ms default, but not as long as you might want.
+     *
+     * A beacon interval is ~100ms, so a short dwell on a busy channel can miss an AP
+     * entirely — which reads as "the network isn't there" when it is just quiet. The
+     * ceiling is not our patience though: Arduino's scanNetworks() waits a hard-coded
+     * 10000ms for the scan to finish and returns WIFI_SCAN_FAILED (-2) if it has not, no
+     * matter what dwell it was asked for. An active scan visits ~13 channels, so anything
+     * above ~750ms per channel exceeds that and *always* fails.
+     *
+     * This was not theoretical: 1000ms/chan meant ~13s of scanning against a 10s ceiling,
+     * so the diagnostic failed 100% of the time — and because the failed call leaves
+     * WIFI_SCANNING_BIT set, every retry afterwards returned -1 ("still running") and no
+     * amount of retrying or resetting the radio could recover it. 500ms keeps the whole
+     * scan near 6.5s, comfortably inside the ceiling, and still well above the default.
+     */
     int found = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true, /*passive=*/false,
-        /*max_ms_per_chan=*/1000);
+        /*max_ms_per_chan=*/500);
+
+    /* A synchronous scan should not come back "running", but it does if the driver started
+     * one behind our back. Waiting for it beats reporting a failure we can still recover
+     * from — the results are equally good whoever started the scan. */
+    if (found == WIFI_SCAN_RUNNING) {
+        uint32_t waited = millis();
+        while (millis() - waited < 15000) {
+            delay(250);
+            int complete = WiFi.scanComplete();
+            if (complete >= 0) {
+                found = complete;
+                break;
+            }
+        }
+    }
+
     if (found < 0) {
         /* Distinguished from "found nothing" on purpose: a failed scan says nothing about
          * what is on the air, and reporting it as "no networks" sends you hunting for an
@@ -207,7 +267,7 @@ static const char *send_result_name(sentry_send_result_t result)
  * device learns nothing about *what* it sent, so having the exact payload on the console
  * is what makes a rejected or silently-dropped event diagnosable.
  */
-#if SENTRY_DEMO_CRASH
+#if SENTRY_DEMO_CRASH_AVAILABLE
 /*
  * A deliberate null-pointer store, three calls deep.
  *
@@ -380,6 +440,14 @@ void setup()
 
     print_sentry_state();
 
+#if SENTRY_DEMO_SCAN
+    /* Build with -D SENTRY_DEMO_SCAN=1 to list what the radio can see on every boot,
+     * whether or not the connect succeeds. Normally this only runs after a failure, which
+     * makes the scan itself awkward to test — and a diagnostic nobody can exercise is how
+     * it came to be broken (see report_visible_networks). */
+    report_visible_networks();
+#endif
+
     /*
      * Pick a route: WiFi if the device has one, otherwise relay through whatever is on the
      * other end of the USB cable (scripts/serial_relay.py). This is a hand-rolled version
@@ -403,6 +471,15 @@ void setup()
         report_boot();
     }
 
+#if SENTRY_CRASH_BUTTON_PIN >= 0
+    /* Plain INPUT: 34-39 are input-only and have no internal pull, so the pull-up is the
+     * board's problem (the M5Stack has one). INPUT_PULLUP would silently do nothing here
+     * and leave the pin floating. */
+    pinMode(SENTRY_CRASH_BUTTON_PIN, INPUT);
+    Serial.printf(
+        "[demo] press the button on GPIO %d to crash on demand\n", (int)SENTRY_CRASH_BUTTON_PIN);
+#endif
+
 #if SENTRY_DEMO_CRASH
     /* Crash only when this boot did *not* follow a crash, so one power-on produces exactly
      * one crash-and-report cycle instead of an endless loop. */
@@ -414,8 +491,39 @@ void setup()
 #endif
 }
 
+#if SENTRY_CRASH_BUTTON_PIN >= 0
+/**
+ * Crash when the button is pressed.
+ *
+ * Deliberately edge-triggered rather than level-triggered: the press easily outlasts the
+ * reboot, and a level test would re-crash the moment the board came back up and fire an
+ * endless loop of identical events at Sentry.
+ */
+static void poll_crash_button()
+{
+    static bool was_pressed = true; /* assume held at boot, so a held button must be
+                                     * released before it can trigger anything */
+    const bool pressed
+        = digitalRead(SENTRY_CRASH_BUTTON_PIN) == (SENTRY_CRASH_BUTTON_ACTIVE_LOW ? LOW : HIGH);
+
+    if (pressed && !was_pressed) {
+        delay(25); /* debounce; a bouncing edge here would just crash a moment early */
+        if (digitalRead(SENTRY_CRASH_BUTTON_PIN) == (SENTRY_CRASH_BUTTON_ACTIVE_LOW ? LOW : HIGH)) {
+            Serial.println("\n[demo] button pressed — crashing now");
+            Serial.flush(); /* the panic handler is about to take the CPU */
+            demo_crash_outer();
+        }
+    }
+    was_pressed = pressed;
+}
+#endif
+
 void loop()
 {
+#if SENTRY_CRASH_BUTTON_PIN >= 0
+    poll_crash_button();
+#endif
+
     /* Once a minute, show that the device is alive and what its resources look like —
      * the same numbers that will ride along on every event as device context. */
     /* Retry anything the buffer is holding — this is how an event created before the radio

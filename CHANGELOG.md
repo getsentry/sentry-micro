@@ -59,3 +59,22 @@
 - Events say whether the backtrace is complete: a `backtrace` tag plus `frames_captured` and
   `backtrace_truncated` in the esp32 context, so a short RISC-V trace cannot be mistaken for
   a whole stack.
+- Verified on hardware over WiFi (ESP32-PICO-D4, M5Stack): boot events and crash reports
+  both delivered straight to ingest, and the offline buffer survives a reboot — two
+  envelopes written with no network were recovered from NVS on the next boot and flushed
+  once the radio came up.
+- `image_size` now stops at the end of the last executable segment rather than the last
+  loadable one. On ESP32 a 16-byte RTC segment at 0x50000200 stretched the reported extent
+  to 281 MB of mostly-unoccupied address space, which invited Sentry to attribute a stray
+  address to this image and resolve it to a confidently wrong symbol.
+- `scripts/release.sh` iterates to a fixpoint instead of assuming two passes. Baking the
+  measurements in changes them — on Xtensa a large constant moves from a two-byte `movi.n`
+  to a four-byte literal — so the build now re-measures and re-bakes until an ELF matches
+  the numbers it was built with, and fails loudly if it never settles.
+- Fixed the "what networks can I see?" diagnostic, which failed every single time it ran.
+  It asked for a 1000ms dwell per channel, but Arduino's `scanNetworks()` waits a
+  hard-coded 10s for a scan that visits ~13 channels; it always timed out and returned -2,
+  and the failed call left `WIFI_SCANNING_BIT` set so every retry then reported -1 forever.
+- `-D SENTRY_CRASH_BUTTON_PIN=<gpio>` crashes the example on a button press, so the
+  crash -> reboot -> report -> symbolicate loop is repeatable without a one-minute reflash
+  each time. `-D SENTRY_DEMO_SCAN=1` runs the network scan on every boot.

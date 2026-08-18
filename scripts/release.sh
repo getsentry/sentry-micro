@@ -99,36 +99,67 @@ export SENTRY_MICRO_IMAGE_NAME="${ENVIRONMENT}.elf"
 
 ELF="${REPO_ROOT}/${PROJECT_DIR}/.pio/build/${ENVIRONMENT}/firmware.elf"
 
-# Two passes, and the second one is not optional.
+# Build until the measurements stop moving — usually three passes, occasionally two.
 #
 # Sentry maps an address back to a function using `instruction_addr - image_addr`, so the
 # firmware has to report the ELF's load address and extent — which only exist once the ELF
-# has been linked. The first pass produces an ELF to measure; the second bakes the
-# measurements in. Skipping it costs nothing visible and silently produces `<unknown>` for
-# every frame, which is a much worse failure than a slow build.
-echo "→ building (pass 1: measure the image)"
+# has been linked. Skipping that costs nothing visible and silently produces `<unknown>`
+# for every frame, which is a much worse failure than a slow build.
+#
+# It cannot be done in a fixed two passes, because baking the numbers in *changes* them.
+# On Xtensa a small constant is a two-byte `movi.n` while a large one becomes a four-byte
+# entry in the literal pool, so compiling in a real 0x00d752cf where pass 1 had nothing
+# grew this image by 0x1c bytes — and the size in the firmware then described the binary
+# from the previous pass. So: re-measure, re-bake, and repeat until a pass produces an ELF
+# whose measurements match the ones it was built with. That is a genuine fixpoint rather
+# than an assumption that one relink settles it.
+#
+# It converges quickly (the size feeds back only through instruction encoding, which stops
+# changing once the constants are the same width), so failing to settle means something
+# else is non-deterministic and is worth stopping for.
+MAX_PASSES=6
+PASS=1
+
+echo "→ building (pass ${PASS}: measure the image)"
 ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" >/dev/null )
 [ -f "$ELF" ] || { echo "error: no ELF at $ELF" >&2; exit 1; }
 
 eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export)"
+export SENTRY_MICRO_IMAGE_ADDR SENTRY_MICRO_IMAGE_SIZE
 echo "  image_addr ${SENTRY_MICRO_IMAGE_ADDR}"
 echo "  image_size ${SENTRY_MICRO_IMAGE_SIZE}"
-export SENTRY_MICRO_IMAGE_ADDR SENTRY_MICRO_IMAGE_SIZE
 
-echo
-echo "→ building (pass 2: bake it in)"
-( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" )
-
-# Adding the -D flags relinks, which can shift the layout. Re-measure and refuse to ship a
-# mismatch rather than uploading debug files that do not describe the binary.
-eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export | sed 's/SENTRY_MICRO_IMAGE/FINAL_IMAGE/')"
-if [ "$FINAL_IMAGE_ADDR" != "$SENTRY_MICRO_IMAGE_ADDR" ] || \
-   [ "$FINAL_IMAGE_SIZE" != "$SENTRY_MICRO_IMAGE_SIZE" ]; then
+SETTLED=0
+while [ "$PASS" -lt "$MAX_PASSES" ]; do
+    PASS=$((PASS + 1))
     echo
-    echo "error: the image moved between passes." >&2
-    echo "       compiled in: ${SENTRY_MICRO_IMAGE_ADDR} +${SENTRY_MICRO_IMAGE_SIZE}" >&2
-    echo "       final ELF:   ${FINAL_IMAGE_ADDR} +${FINAL_IMAGE_SIZE}" >&2
-    echo "       Re-run; if it persists the build is not reproducible." >&2
+    echo "→ building (pass ${PASS}: bake it in)"
+    # Quiet except on the last useful pass, so the log is not three identical builds.
+    ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" >/dev/null )
+
+    eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export \
+        | sed 's/SENTRY_MICRO_IMAGE/MEASURED_IMAGE/')"
+    if [ "$MEASURED_IMAGE_ADDR" = "$SENTRY_MICRO_IMAGE_ADDR" ] && \
+       [ "$MEASURED_IMAGE_SIZE" = "$SENTRY_MICRO_IMAGE_SIZE" ]; then
+        echo "  settled: ${SENTRY_MICRO_IMAGE_ADDR} +${SENTRY_MICRO_IMAGE_SIZE}"
+        SETTLED=1
+        break
+    fi
+
+    echo "  moved:   ${SENTRY_MICRO_IMAGE_ADDR} +${SENTRY_MICRO_IMAGE_SIZE}" \
+         "-> ${MEASURED_IMAGE_ADDR} +${MEASURED_IMAGE_SIZE}"
+    SENTRY_MICRO_IMAGE_ADDR="$MEASURED_IMAGE_ADDR"
+    SENTRY_MICRO_IMAGE_SIZE="$MEASURED_IMAGE_SIZE"
+    export SENTRY_MICRO_IMAGE_ADDR SENTRY_MICRO_IMAGE_SIZE
+done
+
+if [ "$SETTLED" -ne 1 ]; then
+    echo
+    echo "error: the image never stopped moving after ${MAX_PASSES} passes." >&2
+    echo "       last: compiled in ${SENTRY_MICRO_IMAGE_ADDR} +${SENTRY_MICRO_IMAGE_SIZE}," >&2
+    echo "             measured ${MEASURED_IMAGE_ADDR} +${MEASURED_IMAGE_SIZE}" >&2
+    echo "       Shipping this would upload debug files that do not describe the binary." >&2
+    echo "       The build is not reproducible; investigate before releasing." >&2
     exit 1
 fi
 
