@@ -5,7 +5,8 @@
  * abstract Transport interface — so it is testable here against fake transports, the same
  * way the buffer's ring logic is tested against a fake storage vtable. What matters is the
  * *policy*: pick the first available one, skip unavailable ones in order, report
- * SEND_UNAVAILABLE when none are, and re-evaluate fresh on every call.
+ * SEND_UNAVAILABLE when none are, name only the route actually tried, and re-evaluate
+ * fresh on every call.
  */
 
 #include <cstring>
@@ -100,6 +101,25 @@ static void test_name_reports_auto_before_anything_is_ever_selected(void)
     TEST_ASSERT_EQUAL_STRING("auto", transport.name());
 }
 
+static void test_name_stops_reporting_a_route_once_nothing_is_available(void)
+{
+    /* WiFi carries an attempt, then drops along with the relay. The core logs name()
+     * alongside the SEND_UNAVAILABLE, so a name() still saying "wifi" here would attribute
+     * the failure to a transport that was never tried on that attempt. */
+    FakeTransport wifi("wifi", true, SEND_OK);
+    FakeTransport serial("serial", false, SEND_OK);
+    AutoTransport transport({ &wifi, &serial });
+
+    transport.send("url", EMPTY_HEADERS, nullptr, 0);
+    TEST_ASSERT_EQUAL_STRING("wifi", transport.name());
+
+    wifi.set_available(false);
+    Response r = transport.send("url", EMPTY_HEADERS, nullptr, 0);
+    TEST_ASSERT_EQUAL(SEND_UNAVAILABLE, r.result);
+    TEST_ASSERT_EQUAL_STRING("auto", transport.name());
+    TEST_ASSERT_EQUAL(1, wifi.send_count());
+}
+
 static void test_reevaluates_on_every_call_rather_than_caching(void)
 {
     FakeTransport wifi("wifi", false, SEND_OK);
@@ -158,6 +178,7 @@ int main(void)
     RUN_TEST(test_skips_unavailable_transports_in_order);
     RUN_TEST(test_reports_unavailable_when_nothing_is);
     RUN_TEST(test_name_reports_auto_before_anything_is_ever_selected);
+    RUN_TEST(test_name_stops_reporting_a_route_once_nothing_is_available);
     RUN_TEST(test_reevaluates_on_every_call_rather_than_caching);
     RUN_TEST(test_a_failed_send_from_the_chosen_transport_is_returned_as_is);
     RUN_TEST(test_single_transport_list);

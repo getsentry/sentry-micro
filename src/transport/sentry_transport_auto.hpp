@@ -73,13 +73,21 @@ public:
     /**
      * The name of whichever transport was actually last selected, not a static "auto" —
      * so the core's own debug log ("sent %u bytes via %s: result %d") says `wifi` or
-     * `serial` per attempt, for free, with no changes needed anywhere else.
+     * `serial` per attempt, for free, with no changes needed anywhere else. Reads back as
+     * "auto" before the first selection and after any attempt that found nothing available,
+     * so the log never names a transport that was not the one tried.
      */
     const char *name() const override { return last_selected_ ? last_selected_->name() : "auto"; }
 
 private:
     Transport *select()
     {
+        /* Cleared up front, not only assigned on a hit: a scan that finds nothing must not
+         * leave name() reporting the route from a previous attempt. The core logs the name
+         * next to the result ("sent %u bytes via %s: result %d"), so a stale one would
+         * pin a SEND_UNAVAILABLE on a transport that was never tried — precisely the
+         * everything-is-down case this class exists to handle. */
+        last_selected_ = nullptr;
         for (size_t i = 0; i < count_; i++) {
             if (transports_[i]->is_available()) {
                 last_selected_ = transports_[i];
