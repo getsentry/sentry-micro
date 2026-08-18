@@ -37,6 +37,7 @@
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
 #include "core/sentry_throttle.h"
+#include "core/sentry_trace.h"
 #include "core/sentry_transport.h"
 #include "device/sentry_coredump_device.h"
 #include "device/sentry_device.h"
@@ -229,6 +230,50 @@ const sentry_transport_t *sentry_get_transport(void);
  * Returns false when the SDK is disabled or no entropy is available for the id.
  */
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
+
+/**
+ * Adopt the trace context arriving with a request, so events raised while serving it are
+ * joined to whatever called.
+ *
+ *     sentry_trace_adopt(sentry_trace_header, baggage_header);
+ *     handle_the_request();
+ *     sentry_trace_release();
+ *
+ * `sentry_trace` is the `sentry-trace` header value; `baggage` may be NULL. Both are read
+ * during the call and never retained. Returns false — leaving no trace active — if the
+ * header is malformed; see `core/sentry_trace.h` for why a half-readable header is
+ * rejected rather than partly believed.
+ *
+ * The SDK does not care how those strings reached the device. BLE characteristic, HTTP
+ * header, a field in your own protocol: they are two strings by the time they get here.
+ *
+ * **Release it when the operation finishes.** A device that holds the last trace it saw
+ * will attach an unrelated panic hours later to that interaction, which reads as a real
+ * causal link and is not one.
+ */
+bool sentry_trace_adopt(const char *sentry_trace, const char *baggage);
+
+/**
+ * Begin a trace this device is the origin of — a boot, an OTA, a scheduled task.
+ *
+ * Returns false when the SDK is disabled or there is no entropy for the ids.
+ */
+bool sentry_trace_start(void);
+
+/** End the active trace. Safe to call when none is active. */
+void sentry_trace_release(void);
+
+/** The active trace, or NULL. Its `active` field is false when nothing is in flight. */
+const sentry_trace_context_t *sentry_trace_current(void);
+
+/**
+ * Write a `sentry-trace` header value for a call this device is making outward.
+ *
+ * Needs 52 bytes. Returns the length, or 0 when no trace is active — in which case send no
+ * header at all rather than an empty one, so the far end starts its own trace instead of
+ * joining a nonexistent one.
+ */
+size_t sentry_trace_header(char *buf, size_t cap);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

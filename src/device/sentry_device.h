@@ -51,6 +51,28 @@ bool sentry_device_random(uint8_t *out, size_t len);
  */
 uint64_t sentry_device_unix_time(void);
 
+/**
+ * Keep `bytes` across a panic reboot, so a crash can be reported with the context it
+ * happened inside.
+ *
+ * A crash is only reported on the *next* boot, so anything describing the moment it
+ * occurred — which trace was being served, and whose replay it belonged to — has to
+ * outlive the reset. On ESP32 that is RTC slow memory: cleared on power-on, preserved
+ * across a software reset and a panic. Exactly the wanted semantics, since a cold boot had
+ * no operation in flight to remember.
+ *
+ * Best-effort by definition. A port with nowhere to put it does nothing, and the crash is
+ * then reported with no trace — which is the same answer an idle device gives, and correct
+ * rather than merely tolerable.
+ */
+void sentry_device_trace_persist(const void *bytes, size_t len);
+
+/**
+ * Recover what `sentry_device_trace_persist()` stored, or zero `out` if there is nothing —
+ * no previous boot, a power-on reset, or a port with no such storage.
+ */
+void sentry_device_trace_recover(void *out, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

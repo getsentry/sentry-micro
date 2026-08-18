@@ -52,6 +52,33 @@ inline const sentry_device_info_t &device_info() { return *sentry_get_device_inf
 inline const sentry_options_t &options() { return *sentry_get_options(); }
 
 /**
+ * Adopt the trace context arriving with a request.
+ *
+ *     sentry::trace_adopt(sentry_trace_header, baggage_header);
+ *     handle();
+ *     sentry::trace_release();
+ *
+ * Release it when the operation ends — see `sentry_trace_adopt()` for why holding it is
+ * actively harmful rather than merely untidy.
+ */
+inline bool trace_adopt(const char *sentry_trace, const char *baggage = nullptr)
+{
+    return sentry_trace_adopt(sentry_trace, baggage);
+}
+
+/** Begin a trace this device originates — a boot, an OTA. */
+inline bool trace_start() { return sentry_trace_start(); }
+
+/** End the active trace. Safe when none is active. */
+inline void trace_release() { sentry_trace_release(); }
+
+/** The active trace; its `active` field is false when nothing is in flight. */
+inline const sentry_trace_context_t &trace() { return *sentry_trace_current(); }
+
+/** Write a `sentry-trace` value for an outbound call. 0 means "send no header". */
+inline size_t trace_header(char *buf, size_t cap) { return sentry_trace_header(buf, cap); }
+
+/**
  * Report a message.
  *
  *     sentry::capture_message(SENTRY_LEVEL_WARNING, "OTA aborted: bad signature");

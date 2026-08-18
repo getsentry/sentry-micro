@@ -135,3 +135,14 @@
   URL with `SEND_REJECTED` rather than downgrading it, since sending the envelope in clear
   would put the DSN's write key on the wire, and `set_ca_cert()` is compiled out so pinning
   a certificate in a no-TLS build is a compile error rather than a silent no-op.
+- Trace context: `sentry_trace_adopt()` / `sentry_trace_start()` / `sentry_trace_release()`,
+  with the `sentry-trace` and `baggage` headers parsed in `core/` and events carrying a
+  `trace` context — and a `replay` context when the calling app had a replay running, so a
+  device crash links to the recording of the interaction that caused it. A trace is scoped to
+  one unit of work rather than to the device's lifetime: holding the last-seen trace would
+  attach an unrelated panic hours later to that interaction, which renders exactly like a
+  real causal link. Malformed headers are rejected whole rather than partly believed, since
+  adopting the readable half of a garbled header joins a trace that does not exist.
+- The active trace survives a panic in RTC slow memory (`RTC_NOINIT_ATTR`), which is cleared
+  on power-on but preserved across a software reset — so a crash reported on the next boot
+  still carries the trace it happened inside, while a cold boot correctly carries none.

@@ -35,6 +35,9 @@ typedef struct {
 
     /** Local ceiling on captured messages; see sentry_throttle.h for why it is not optional. */
     sentry_throttle_t throttle;
+
+    /** The operation currently being served, if any. See core/sentry_trace.h. */
+    sentry_trace_context_t trace;
 } sentry_state_t;
 
 static sentry_state_t g_state;
@@ -124,6 +127,10 @@ bool sentry_init(const sentry_options_t *options)
     }
 
     sentry_device_info_get(&g_state.device);
+    /* Recovered before anything can raise an event, so a crash report built moments from
+     * now still carries the trace the device died inside. Empty unless the last boot ended
+     * in a panic while serving a request. */
+    sentry_device_trace_recover(&g_state.trace, sizeof(g_state.trace));
     sentry_throttle_init(
         &g_state.throttle, options->max_messages_per_minute, options->message_repeat_window_ms);
     g_state.enabled = true;
@@ -231,6 +238,57 @@ sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
         }
     }
     return response;
+}
+
+bool sentry_trace_adopt(const char *sentry_trace, const char *baggage)
+{
+    if (!g_state.enabled) {
+        return false;
+    }
+    uint8_t span_bytes[8];
+    if (!sentry_device_random(span_bytes, sizeof(span_bytes))) {
+        return false;
+    }
+    if (!sentry_trace_adopt_header(&g_state.trace, sentry_trace, baggage, span_bytes)) {
+        debug_log("ignored a malformed sentry-trace header");
+        return false;
+    }
+    /* Persisted, not just held: the crash that matters most is the one that happens while
+     * serving this request, and it is not reported until the next boot. */
+    sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
+    debug_log("joined trace %s%s", g_state.trace.trace_id,
+        g_state.trace.replay_id[0] ? " (with a replay)" : "");
+    return true;
+}
+
+bool sentry_trace_start(void)
+{
+    if (!g_state.enabled) {
+        return false;
+    }
+    uint8_t trace_bytes[16];
+    uint8_t span_bytes[8];
+    if (!sentry_device_random(trace_bytes, sizeof(trace_bytes))
+        || !sentry_device_random(span_bytes, sizeof(span_bytes))) {
+        return false;
+    }
+    sentry_trace_begin(&g_state.trace, trace_bytes, span_bytes, true);
+    sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
+    debug_log("began trace %s", g_state.trace.trace_id);
+    return true;
+}
+
+void sentry_trace_release(void)
+{
+    sentry_trace_clear(&g_state.trace);
+    sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
+}
+
+const sentry_trace_context_t *sentry_trace_current(void) { return &g_state.trace; }
+
+size_t sentry_trace_header(char *buf, size_t cap)
+{
+    return sentry_trace_header_write(buf, cap, &g_state.trace);
 }
 
 sentry_response_t sentry_capture_message(sentry_level_t level, const char *message)
@@ -398,6 +456,7 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf)
     event->image_addr = g_state.options.image_addr;
     event->image_size = g_state.options.image_size;
     event->image_name = g_state.options.image_name;
+    event->trace = g_state.trace.active ? &g_state.trace : NULL;
 
     /* Sampled now rather than reused from init, so the numbers describe the moment the
      * event happened — which for a heap leak is the entire point. */

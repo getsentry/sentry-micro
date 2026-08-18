@@ -539,6 +539,48 @@ Plus one the scripts do themselves: two variants that somehow derive the same `d
 fail the release, because Sentry would resolve one binary's addresses against the other and
 print function names that look entirely plausible.
 
+## Linking a device event to what caused it
+
+A crash on the device and a session replay in the app that provoked it are the same
+incident. Sentry joins them on a shared `trace_id`, so the device's job is to carry an id it
+was handed, attach it to what it emits, and then forget it.
+
+```cpp
+sentry::trace_adopt(sentry_trace_header, baggage_header);   // request arrives
+handle_the_request();                                       // any event here joins the trace
+sentry::trace_release();                                    // request done
+```
+
+The SDK does not care how those two strings reached the device — a BLE characteristic, an
+HTTP header, a field in your own protocol. By the time they get here they are two strings.
+
+**A trace is a unit of work, not a lifetime.** One trace per boot is the tempting design and
+it is wrong: it stays open for days, which the trace UI and the sampling model both assume
+never happens. The bounded things that *are* traces are an app-initiated operation, a boot,
+an OTA — and `sentry::trace_start()` begins one the device originates.
+
+That makes the device behave like a backend, which is also why the release step matters. A
+device that keeps the last trace it saw will attach a panic three hours later to an
+interaction that had nothing to do with it. That link renders exactly like a real one.
+
+**`replay_id` comes along for free.** It rides in the `baggage` header whenever the calling
+app has a replay running, and lands in the event's `replay` context — so the Sentry issue
+links straight to the recording of the person who caused it. It is scoped to the request
+like everything else here.
+
+### Surviving the crash
+
+A crash is only reported on the *next* boot, so the active trace has to outlive the panic.
+On ESP32 it is kept in RTC slow memory (`RTC_NOINIT_ATTR`), which is cleared on power-on but
+survives a software reset and a panic — precisely the lifetime wanted. A cold boot forgets
+it, because there was no operation in flight to remember, and the crash then carries no
+trace. That is the correct answer rather than a gap.
+
+### What this does not do yet
+
+Spans. The crash-to-replay link needs none of them: trace id in, trace id on the event. Spans
+for boot phases or request handling are a separate increment.
+
 ## Writing a transport
 
 Everything Sentry-specific has already happened by the time a transport is called: it gets a

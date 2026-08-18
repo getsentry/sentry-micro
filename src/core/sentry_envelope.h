@@ -16,6 +16,7 @@
 #include "sentry_boot.h"
 #include "sentry_coredump.h"
 #include "sentry_device_info.h"
+#include "sentry_trace.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -131,6 +132,14 @@ typedef struct {
      * Worth making distinct per build variant so a mixed fleet stays readable.
      */
     const char *image_name;
+
+    /**
+     * The trace this event belongs to, or NULL when none is active.
+     *
+     * NULL is the ordinary case, not a gap: a device sitting idle is not serving anybody's
+     * request, and inventing a trace for it would be a link to nothing.
+     */
+    const sentry_trace_context_t *trace;
 
     /* Sampled at event time rather than at boot, so they describe the moment. */
     uint32_t free_heap_bytes;

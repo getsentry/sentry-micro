@@ -229,6 +229,35 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
     }
     sentry_json_object_end(writer);
 
+    /*
+     * What joins this event to everything else that was happening. `trace` is how Sentry
+     * groups the device's crash with the app call that provoked it; `replay` is the direct
+     * link to the recording of the person who made that call.
+     *
+     * Both are omitted entirely when no trace is active. An event with no trace is correct
+     * and common — the device was idle — whereas an event carrying a stale trace would be
+     * confidently wrong about which interaction caused it.
+     */
+    if (event->trace && event->trace->active) {
+        sentry_json_key(writer, "trace");
+        sentry_json_object_begin(writer);
+        sentry_json_kv_string(writer, "type", "trace");
+        sentry_json_kv_string(writer, "trace_id", event->trace->trace_id);
+        sentry_json_kv_string(writer, "span_id", event->trace->span_id);
+        if (event->trace->parent_span_id[0]) {
+            sentry_json_kv_string(writer, "parent_span_id", event->trace->parent_span_id);
+        }
+        sentry_json_object_end(writer);
+
+        if (event->trace->replay_id[0]) {
+            sentry_json_key(writer, "replay");
+            sentry_json_object_begin(writer);
+            sentry_json_kv_string(writer, "type", "replay");
+            sentry_json_kv_string(writer, "replay_id", event->trace->replay_id);
+            sentry_json_object_end(writer);
+        }
+    }
+
     sentry_json_object_end(writer); /* contexts */
 
     /* The crash itself. `exception` is what makes this an issue with a title and a

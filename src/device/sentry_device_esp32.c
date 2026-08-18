@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h" /* RTC_NOINIT_ATTR */
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
@@ -151,4 +152,50 @@ uint64_t sentry_device_unix_time(void)
         return 0;
     }
     return (uint64_t)now;
+}
+
+/*
+ * Trace context across a panic reboot.
+ *
+ * RTC slow memory is not cleared by the startup code on a software reset or a panic, only
+ * on a true power-on. That is precisely the lifetime wanted here: a panic while serving a
+ * request preserves that request's trace so the crash report can carry it, and a cold boot
+ * forgets it because there was no request in flight to remember.
+ *
+ * The magic word is what distinguishes "we stored this" from whatever was in RTC RAM at
+ * power-on. Without it, uninitialised memory would be read as a trace id and every event
+ * would join a fictional trace.
+ */
+#define SENTRY_RTC_TRACE_MAGIC 0x53545243u /* "STRC" */
+#define SENTRY_RTC_TRACE_CAP 128
+
+RTC_NOINIT_ATTR static struct {
+    uint32_t magic;
+    uint32_t len;
+    uint8_t bytes[SENTRY_RTC_TRACE_CAP];
+} g_rtc_trace;
+
+void sentry_device_trace_persist(const void *bytes, size_t len)
+{
+    if (!bytes || len == 0 || len > sizeof(g_rtc_trace.bytes)) {
+        /* Too large to keep is not an error worth failing a send over; the crash simply
+         * arrives without a trace. Silently truncating would be worse — half a trace id
+         * points at nothing while looking exactly like one that points somewhere. */
+        g_rtc_trace.magic = 0;
+        return;
+    }
+    memcpy(g_rtc_trace.bytes, bytes, len);
+    g_rtc_trace.len = (uint32_t)len;
+    g_rtc_trace.magic = SENTRY_RTC_TRACE_MAGIC;
+}
+
+void sentry_device_trace_recover(void *out, size_t len)
+{
+    if (!out || len == 0) {
+        return;
+    }
+    memset(out, 0, len);
+    if (g_rtc_trace.magic == SENTRY_RTC_TRACE_MAGIC && g_rtc_trace.len == len) {
+        memcpy(out, g_rtc_trace.bytes, len);
+    }
 }

@@ -618,6 +618,61 @@ static void test_event_without_a_crash_has_no_exception(void)
     TEST_ASSERT_NULL(strstr(buf, "exception"));
 }
 
+static void test_an_event_in_a_trace_carries_it(void)
+{
+    sentry_trace_context_t trace;
+    char buf[2048];
+
+    const uint8_t span[8] = { 0xbb, 0x8f, 0x27, 0x81, 0x30, 0x53, 0x5c, 0x3c };
+    TEST_ASSERT_TRUE(
+        sentry_trace_adopt_header(&trace, "d49d9bf66f13450b81f65bc51cf49c03-7c51afd529da4a2a-1",
+            "sentry-replay_id=1c4b1a2f3e5d4c6b8a9f0e1d2c3b4a59", span));
+
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.trace = &trace;
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) < sizeof(buf));
+
+    /* The join Sentry uses to put this event on the same timeline as the app call that
+     * caused it, and then to the recording of the person who made it. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"trace_id\":\"d49d9bf66f13450b81f65bc51cf49c03\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"span_id\":\"bb8f278130535c3c\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"parent_span_id\":\"7c51afd529da4a2a\""));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"replay_id\":\"1c4b1a2f3e5d4c6b8a9f0e1d2c3b4a59\""));
+}
+
+static void test_an_event_outside_a_trace_omits_both_contexts(void)
+{
+    char buf[2048];
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.trace = NULL;
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) < sizeof(buf));
+
+    /* An idle device is not serving anybody. Emitting an empty or zeroed trace context
+     * would claim a link that does not exist, which is worse than claiming none. */
+    TEST_ASSERT_NULL(strstr(buf, "\"trace\""));
+    TEST_ASSERT_NULL(strstr(buf, "\"replay\""));
+}
+
+static void test_a_trace_without_a_replay_omits_only_the_replay(void)
+{
+    sentry_trace_context_t trace;
+    char buf[2048];
+
+    const uint8_t span[8] = { 0xbb, 0x8f, 0x27, 0x81, 0x30, 0x53, 0x5c, 0x3c };
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &trace, "d49d9bf66f13450b81f65bc51cf49c03-7c51afd529da4a2a-1", NULL, span));
+
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.trace = &trace;
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) < sizeof(buf));
+
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"trace_id\":\"d49d9bf66f13450b81f65bc51cf49c03\""));
+    TEST_ASSERT_NULL(strstr(buf, "\"replay\""));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -649,5 +704,8 @@ int main(void)
     RUN_TEST(test_envelope_header_length_matches_the_payload);
     RUN_TEST(test_envelope_reports_the_size_it_needs);
     RUN_TEST(test_rejects_an_event_without_an_id);
+    RUN_TEST(test_an_event_in_a_trace_carries_it);
+    RUN_TEST(test_an_event_outside_a_trace_omits_both_contexts);
+    RUN_TEST(test_a_trace_without_a_replay_omits_only_the_replay);
     return UNITY_END();
 }
