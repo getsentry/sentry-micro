@@ -86,6 +86,4 @@
   the boot that sent it was itself a crash. The two normally agree; they come apart when the
   dump outlives that boot (delivery failed, or the board was power-cycled or reflashed
   first), and the old logic tagged those `crashed: false` — so an alert on `crashed:true`
-  would skip exactly the crashes that were hardest to deliver. The new `crash_deferred` flag
-  in the esp32 context marks them, and warns that the heap and uptime alongside it describe
-  the reporting boot rather than the crash.
+  would skip exactly the crashes that were hardest to deliver.

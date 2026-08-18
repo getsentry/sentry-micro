@@ -145,16 +145,15 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
          * "This event describes a crash", not "this boot followed one".
          *
          * Usually the same thing: the core dump is read on the boot right after the panic,
-         * so the reset reason is `panic` and both readings agree. They come apart when the
-         * dump outlives that boot — delivery failed and it sat in flash, or the board was
-         * reflashed or power-cycled before it could be sent. Then a genuine crash report
+         * so the reset reason is `panic` and both agree. They come apart when the dump
+         * outlives that boot — delivery failed and it sat in flash, or the board was
+         * reflashed or power-cycled before it could be sent. Then a real crash report
          * arrives from a `poweron` boot, and keying this off the reset reason alone tagged
          * it `crashed: false`. An alert filtered on `crashed:true` would silently skip
          * exactly the crashes that were hardest to deliver.
          *
-         * `reset_reason` deliberately keeps describing the boot that did the reporting,
-         * because that is what it is. The pair reads oddly together, which is what
-         * `crash_deferred` in the esp32 context below exists to explain.
+         * `reset_reason` keeps describing the boot that did the reporting, because that is
+         * what it is.
          */
         sentry_json_kv_bool(writer, "crashed",
             sentry_reset_reason_is_crash(device->reset_reason)
@@ -202,9 +201,18 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_object_end(writer);
     }
 
-    /* Not a standard context, so it goes under its own key rather than polluting `device`
+    /*
+     * Not a standard context, so it goes under its own key rather than polluting `device`
      * with fields Sentry would not render. These are the numbers that actually predict an
-     * ESP32 field failure: heap headroom trending down, and how long it survived. */
+     * ESP32 field failure: heap headroom trending down, and how long it survived.
+     *
+     * On a crash report they describe the boot that *sent* the report, not the one that
+     * died — the core dump is read after the reboot, so uptime is typically a few hundred
+     * milliseconds and the heap is whatever a fresh boot has. That is true of every crash
+     * report, not some special case, so there is no flag to check: on an event with an
+     * exception, read these as "the state when we told you", never "the state at the
+     * crash". The crash's own state is in the stack trace.
+     */
     sentry_json_key(writer, "esp32");
     sentry_json_object_begin(writer);
     sentry_json_kv_string(writer, "type", "esp32");
@@ -215,19 +223,6 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_kv_uint(writer, "frames_captured", event->coredump->frame_count);
         sentry_json_kv_bool(writer, "backtrace_truncated", event->coredump->truncated);
         sentry_json_kv_string_opt(writer, "crash_task", event->coredump->task_name);
-        /*
-         * True when the core dump was found on a boot that did not itself follow the crash
-         * — delivery failed and it waited in flash, or the board was power-cycled or
-         * reflashed first.
-         *
-         * Worth saying out loud, because every other number in this context (uptime,
-         * free_heap, min_free_heap) and the whole `device` context describe the boot that
-         * *sent* the report, not the one that died. On a deferred report they are
-         * unrelated to the crash and reading them as "the state at the time of the crash"
-         * would be wrong.
-         */
-        sentry_json_kv_bool(writer, "crash_deferred",
-            !(device && sentry_reset_reason_is_crash(device->reset_reason)));
     }
     if (device) {
         sentry_json_kv_uint(writer, "chip_revision", device->chip_revision);
