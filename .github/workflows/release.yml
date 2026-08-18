@@ -20,6 +20,12 @@ on:
         required: false
         type: string
 
+# Uploading debug files is an outbound call authenticated by SENTRY_AUTH_TOKEN; nothing
+# here needs to write to the repository. This is worth being strict about in a release
+# workflow specifically, because it is the one that runs with real credentials.
+permissions:
+  contents: read
+
 jobs:
   # Read the variants out of platformio.ini rather than listing them here. A board added
   # to that file joins the release automatically; a hand-written list is how a variant

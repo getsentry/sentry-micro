@@ -172,8 +172,8 @@ runs:
       id: build
       shell: bash
       env:
-        SENTRY_ORG: ${{ inputs.org }}
-        SENTRY_PROJECT: ${{ inputs.project }}
+        INPUT_ORG: ${{ inputs.org }}
+        INPUT_PROJECT: ${{ inputs.project }}
         SENTRY_MICRO_ROOT: ${{ steps.resolve.outputs.sentry-micro }}
         PROJECT_PATH: ${{ steps.resolve.outputs.project }}
         INPUT_RELEASE: ${{ inputs.release }}
@@ -182,6 +182,13 @@ runs:
         INPUT_WAIT: ${{ inputs.wait }}
       run: |
         set -euo pipefail
+
+        # Exported only when actually given a value. Setting these as step-level `env:`
+        # would export the empty default too, which silently overrides a SENTRY_PROJECT
+        # the caller exported for the whole job — and the documented fallback to it would
+        # never fire.
+        if [ -n "$INPUT_ORG" ]; then export SENTRY_ORG="$INPUT_ORG"; fi
+        if [ -n "$INPUT_PROJECT" ]; then export SENTRY_PROJECT="$INPUT_PROJECT"; fi
 
         # One release name across the matrix, so the variants of a build show up together
         # in Sentry. The per-variant build-id is derived from release + environment, so
