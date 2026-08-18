@@ -10,11 +10,26 @@
 an ESP32 and delivers them to Sentry over *any* connectivity — WiFi directly, or by handing a
 fully-formed Sentry envelope to a companion app that just relays the bytes.
 
-> **Status: early prototype.** This is a Sentry hackweek project, not a released SDK — but
-> it does the whole job end to end: an ESP32 panics, reboots, and the crash arrives in Sentry
-> as a **symbolicated backtrace with function names, file names, line numbers and source**,
-> over WiFi or relayed through a host. See [Roadmap](#roadmap) for what is and is not done,
-> and [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the proposal.
+> **Status: early prototype.** This is a Sentry hackweek project and is **not officially
+> supported by Sentry** — it is not a released SDK. It does the whole job end to end: an
+> ESP32 panics, reboots, and the crash arrives in Sentry as a **symbolicated backtrace with
+> function names, file names, line numbers and source**, over WiFi or relayed through a
+> host. We accept pull requests if you are willing to fix bugs and add features; if there is
+> enough interest we may invest more into this. See [Roadmap](#roadmap) for what is and is
+> not done, and [`ESP32_SENTRY_HACKWEEK.md`](ESP32_SENTRY_HACKWEEK.md) for the proposal.
+
+> **⚠️ Not production-hardened.** The examples demonstrate the pipeline; they are not built
+> to be copied into a shipped device, and two trust decisions are left to you before you
+> rely on this against real hardware:
+>
+> - **TLS certificate verification is off by default** in the WiFi transport. Your traffic
+>   is encrypted but *unauthenticated* — a device will talk to any server that answers its
+>   DSN host. Call `set_ca_cert()` with a real root before trusting it; the example ships
+>   one in [`certs.h`](examples/wifi_basic/src/certs.h). See the [WiFi transport](#wifi-transport--https-post-straight-to-ingest) section.
+> - **The relay is an open proxy by design.** A companion app performs HTTPS on the device's
+>   behalf, and the DSN-host whitelist lives on the device *and* must be enforced
+>   independently on the relay side. That is a convention, not something the protocol
+>   enforces. See the [Serial relay](#serial-relay-transport--when-the-device-has-no-network) section.
 
 This is a concrete answer to
 [sentry-native#915](https://github.com/getsentry/sentry-native/issues/915), where Sentry
@@ -197,7 +212,9 @@ transport.set_ca_cert(ISRG_ROOT_X1_PEM);
 That is not a default because pinning a root that later expires bricks reporting on every
 deployed device simultaneously, and a maker with no CI has no way to push a new one. The
 trade belongs to whoever ships the firmware, so the SDK makes it explicit and logs a warning
-the first time it sends without one.
+the first time it sends without one. The example turns this on out of the box — it ships the
+ISRG Root X1 cert in [`certs.h`](examples/wifi_basic/src/certs.h), which verifies the public
+Sentry cloud — and swaps in a different root only if you self-host.
 
 **Do not call a TLS transport from a panic handler.** mbedTLS allocates several KB during a
 handshake and the heap is exactly what you cannot trust right after a crash. The design does

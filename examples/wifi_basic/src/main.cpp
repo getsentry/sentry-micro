@@ -24,6 +24,8 @@
 #include <transport/sentry_transport_serial.hpp>
 #include <transport/sentry_transport_wifi.hpp>
 
+#include "certs.h"
+
 /* Local, gitignored credentials. Absent in CI, where the values come from -D flags. */
 #if __has_include("secrets.h")
 #    include "secrets.h"
@@ -430,10 +432,13 @@ void setup()
      * usable network still testable.
      */
     if (connect_wifi()) {
-        /* For production also call wifi_transport.set_ca_cert(); see the header for why
-         * certificate verification is not on by default. */
+        /* Turn on TLS verification. Without set_ca_cert() the transport sends encrypted
+         * but *unauthenticated* — a device will talk to any server that answers its DSN
+         * host. The root in certs.h verifies the public Sentry cloud out of the box;
+         * swap in your ingest host's root instead if you self-host (see certs.h). */
+        wifi_transport.set_ca_cert(SENTRY_INGEST_CA_CERT);
         sentry::set_transport(wifi_transport);
-        Serial.println("[sentry] transport: wifi");
+        Serial.println("[sentry] transport: wifi (tls verified)");
     } else {
         sentry::set_transport(serial_transport);
         Serial.println("[sentry] transport: serial relay (run scripts/serial_relay.py)");
