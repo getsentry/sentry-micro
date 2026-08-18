@@ -22,6 +22,25 @@
 
 #if defined(ARDUINO)
 
+/**
+ * Compile TLS in (1, the default) or out (0).
+ *
+ * Setting it to 0 removes the HTTPS branch and the `WiFiClientSecure` it constructs, so
+ * mbedTLS has nothing referencing it and the linker can drop it. That is the only way to
+ * get the space back: a runtime `if (is_https)` keeps the code linked whether or not any
+ * device ever takes that branch.
+ *
+ * Only meaningful for a self-hosted ingest endpoint reached over plain HTTP, or a local
+ * relay. Sentry's cloud is HTTPS-only, so a build with this off cannot talk to it — and
+ * says so rather than quietly falling back to plaintext, because downgrading would put the
+ * DSN's write key on the wire in clear.
+ *
+ *     build_flags = -D SENTRY_MICRO_WIFI_TLS=0
+ */
+#    ifndef SENTRY_MICRO_WIFI_TLS
+#        define SENTRY_MICRO_WIFI_TLS 1
+#    endif
+
 namespace sentry {
 
 class WiFiTransport : public Transport {
@@ -42,6 +61,7 @@ public:
 
     const char *name() const override { return "wifi"; }
 
+#    if SENTRY_MICRO_WIFI_TLS
     /**
      * Verify the server against this PEM root certificate.
      *
@@ -56,6 +76,7 @@ public:
      * than a default either way.
      */
     void set_ca_cert(const char *pem_root_certificate) { ca_cert_ = pem_root_certificate; }
+#    endif
 
     /** Connect and response timeout. Default 10s. */
     void set_timeout_ms(uint32_t timeout_ms) { timeout_ms_ = timeout_ms; }
@@ -72,10 +93,12 @@ private:
      * core 3.x `WiFiClient` is a *typedef* for `NetworkClient`, so any forward declaration
      * here is a conflicting definition and any include drags the whole network stack into
      * every translation unit that wants to construct this class. */
+#    if SENTRY_MICRO_WIFI_TLS
     const char *ca_cert_ = nullptr;
+    bool warned_insecure_ = false;
+#    endif
     const char *allowed_host_ = nullptr;
     uint32_t timeout_ms_ = 10000;
-    bool warned_insecure_ = false;
 };
 
 } // namespace sentry

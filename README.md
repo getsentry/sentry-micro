@@ -280,6 +280,34 @@ Footprint on `esp32dev` with the WiFi transport, TLS and the full example:
 **923,937 bytes flash** (50% of a 1.75 MB OTA slot) and **47,836 bytes RAM** (15% of 320 KB).
 mbedTLS dominates both.
 
+### Building without TLS
+
+`WiFiClientSecure` is what pulls mbedTLS into the image, and a runtime `if (is_https)`
+keeps it linked whether or not any device ever takes that branch. `SENTRY_MICRO_WIFI_TLS=0`
+removes the branch at compile time so the linker can drop it:
+
+```ini
+build_flags = -D SENTRY_MICRO_WIFI_TLS=0
+```
+
+Measured on `esp32dev`, clean builds of `wifi_basic` either way:
+
+| | TLS on | TLS off | Saved |
+| --- | --- | --- | --- |
+| Flash image | 941,248 B | 813,840 B | **127,408 B (124 KB)** |
+| `.text` | 777,445 B | 685,601 B | 91,844 B |
+| RAM (`.bss`) | 22,497 B | 21,593 B | 904 B |
+
+That is worth having on a 4 MB module with an OTA layout, where two app slots plus a
+filesystem leave less headroom than the flash size suggests.
+
+The build then talks **plain HTTP only**. An `https://` ingest URL is refused with
+`SEND_REJECTED` rather than downgraded — sending the envelope in clear would put the DSN's
+write key on the wire — so this is only useful against a self-hosted endpoint on HTTP, or a
+relay. Sentry's cloud is HTTPS-only. `set_ca_cert()` is compiled out too, so a build that
+opts out of TLS and still tries to pin a certificate fails to compile rather than silently
+ignoring it.
+
 ## Serial relay transport — when the device has no network
 
 A device that cannot reach the internet is still plugged into a machine that can. This hands

@@ -25,7 +25,9 @@
 #include <transport/sentry_transport_serial.hpp>
 #include <transport/sentry_transport_wifi.hpp>
 
-#include "certs.h"
+#if SENTRY_MICRO_WIFI_TLS
+#    include "certs.h"
+#endif
 
 /* Local, gitignored credentials. Absent in CI, where the values come from -D flags. */
 #if __has_include("secrets.h")
@@ -462,7 +464,14 @@ void setup()
      * Unconditional, not inside a "did WiFi come up?" branch: `transport` re-picks a route
      * on every delivery attempt, so WiFi may be chosen long after setup() has returned.
      */
+#if SENTRY_MICRO_WIFI_TLS
     wifi_transport.set_ca_cert(SENTRY_INGEST_CA_CERT);
+#else
+    /* Built with -D SENTRY_MICRO_WIFI_TLS=0: there is no HTTPS branch to configure, and an
+     * https DSN will be refused rather than sent in clear. Only useful against a
+     * self-hosted endpoint on plain HTTP. */
+    Serial.println("[sentry] built without TLS; the WiFi transport is plain HTTP only");
+#endif
 
     /*
      * Join WiFi if possible — connect_wifi() prints the outcome either way, and runs a

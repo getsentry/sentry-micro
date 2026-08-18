@@ -127,3 +127,11 @@
   no repeat was ever suppressed: a twenty-iteration loop produced seventeen events and
   evicted thirteen envelopes from the offline buffer. Timing from completion makes the rule
   hold however slow the transport is.
+- `-D SENTRY_MICRO_WIFI_TLS=0` compiles the HTTPS branch out of `WiFiTransport`, so nothing
+  references `WiFiClientSecure` and the linker drops mbedTLS. A runtime `if (is_https)` kept
+  it linked whether or not a device ever took that branch, which made the no-TLS variant
+  nominal rather than real. Measured on `esp32dev`: the flash image falls from 941,248 to
+  813,840 bytes — 124 KB — plus 904 bytes of RAM. Such a build refuses an `https://` ingest
+  URL with `SEND_REJECTED` rather than downgrading it, since sending the envelope in clear
+  would put the DSN's write key on the wire, and `set_ca_cert()` is compiled out so pinning
+  a certificate in a no-TLS build is a compile error rather than a silent no-op.

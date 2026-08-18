@@ -6,7 +6,9 @@
 #    include <stdlib.h>
 #    include <string.h>
 #    include <WiFi.h>
-#    include <WiFiClientSecure.h>
+#    if SENTRY_MICRO_WIFI_TLS
+#        include <WiFiClientSecure.h>
+#    endif
 
 #    include "../sentry_micro.h"
 
@@ -97,6 +99,7 @@ Response WiFiTransport::send(
 
     const bool is_https = strncmp(url, "https://", 8) == 0;
 
+#    if SENTRY_MICRO_WIFI_TLS
     /* Build only the client actually needed: WiFiClientSecure allocates an mbedTLS context
      * on construction, which is wasted on a plain-HTTP self-hosted endpoint. */
     if (is_https) {
@@ -113,6 +116,17 @@ Response WiFiTransport::send(
         client.setTimeout(timeout_ms_ / 1000);
         return post_envelope(client, url, headers, body, len, timeout_ms_);
     }
+#    else
+    /* Refused, not downgraded. Sending an https DSN's envelope over plain HTTP would put
+     * the auth header — which carries the key that can write to the project — on the wire
+     * in clear. REJECTED rather than UNAVAILABLE so the core does not buffer and retry
+     * something no amount of waiting can fix. */
+    if (is_https) {
+        log_line("this build has TLS compiled out (SENTRY_MICRO_WIFI_TLS=0) "
+                 "but the ingest URL is https");
+        return SEND_REJECTED;
+    }
+#    endif
 
     WiFiClient client;
     client.setTimeout(timeout_ms_ / 1000);
