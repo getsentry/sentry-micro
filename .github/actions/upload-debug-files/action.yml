@@ -1,0 +1,229 @@
+name: Upload ESP32 debug files to Sentry
+description: >-
+  Build ESP32 firmware with a Sentry build-id compiled in, stamp the same id into the ELF,
+  upload the debug files, and verify the result — so crashes arrive as readable backtraces
+  instead of hex.
+
+# Everything this does can be done by hand, and every step of it fails silently when done
+# wrong: an unstamped ELF uploads happily, a wrong image_addr resolves every frame to
+# <unknown>, and a build variant nobody uploaded looks exactly like one that works. The
+# point of packaging it is that those failures become build failures.
+#
+#   - uses: getsentry/sentry-micro/.github/actions/upload-debug-files@main
+#     with:
+#       project-dir: firmware
+#       release: my-firmware@${{ github.ref_name }}
+#     env:
+#       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+#
+# By default it builds *every* environment declared in the project's platformio.ini. See
+# list-environments for sharding that across a job matrix instead.
+
+inputs:
+  project-dir:
+    description: PlatformIO project directory, relative to the workspace.
+    required: false
+    default: "."
+  environments:
+    description: >-
+      Environments to build, comma- or newline-separated. Empty means every one declared
+      in platformio.ini, which is the safe default: a board added to the file is picked up
+      without anyone remembering to edit this workflow.
+    required: false
+    default: ""
+  skip-environments:
+    description: >-
+      Environments deliberately left out. Any declared environment that is neither built
+      nor skipped fails the run, because the alternative is shipping a variant whose users
+      get raw addresses with nothing reporting the gap.
+    required: false
+    default: ""
+  require-complete:
+    description: >-
+      Enforce that every declared environment is accounted for. Set to false only when
+      this job is one shard of a matrix built from list-environments, where coverage is
+      already guaranteed by construction.
+    required: false
+    default: "true"
+  release:
+    description: >-
+      Release identifier for all variants, e.g. my-firmware@1.2.3. Defaults to
+      <repository>@<git describe>. Each variant still gets its own build-id derived from
+      release + environment — two variants sharing one id would resolve addresses against
+      the wrong binary.
+    required: false
+    default: ""
+  org:
+    description: >-
+      Sentry organization slug. Leave empty when using an organization auth token, which
+      embeds its own org and overrides anything passed here.
+    required: false
+    default: ""
+  project:
+    description: >-
+      Sentry project slug or id. Falls back to $SENTRY_PROJECT, then to the project
+      embedded in $SENTRY_MICRO_DSN.
+    required: false
+    default: ""
+  upload:
+    description: >-
+      Set to false to build, stamp and verify without contacting Sentry. Useful on pull
+      requests, where you want to know the release chain still works without publishing
+      debug files for a build that will never ship.
+    required: false
+    default: "true"
+  include-sources:
+    description: >-
+      Embed source text alongside the debug info, so Sentry shows the offending line and
+      not just its number. Turn off if the source must not leave your infrastructure.
+    required: false
+    default: "true"
+  wait:
+    description: >-
+      Wait for Sentry to finish processing each upload. On by default: without it the
+      command returns as soon as the bytes are accepted, and a file the server later
+      rejects is indistinguishable from one it processed.
+    required: false
+    default: "true"
+  sentry-cli-version:
+    description: sentry-cli version to install, or "latest".
+    required: false
+    default: "latest"
+
+outputs:
+  variants:
+    description: >-
+      JSON array of {environment, release, code_id, debug_id, image_addr, image_size,
+      elf, uploaded}, one per environment built.
+    value: ${{ steps.build.outputs.variants }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve environments
+      id: resolve
+      shell: bash
+      # Inputs arrive as environment variables rather than being interpolated into the
+      # script: a release name containing a quote would otherwise end the string and run
+      # whatever followed it.
+      env:
+        INPUT_PROJECT_DIR: ${{ inputs.project-dir }}
+        INPUT_ENVIRONMENTS: ${{ inputs.environments }}
+        INPUT_SKIP: ${{ inputs.skip-environments }}
+        INPUT_REQUIRE_COMPLETE: ${{ inputs.require-complete }}
+      run: |
+        set -euo pipefail
+        # $GITHUB_ACTION_PATH is this directory inside the checked-out sentry-micro repo;
+        # three levels up is its root, where the scripts live.
+        sentry_micro="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        project="$(cd "${GITHUB_WORKSPACE}/${INPUT_PROJECT_DIR}" && pwd)"
+        {
+          echo "sentry-micro=${sentry_micro}"
+          echo "project=${project}"
+        } >> "$GITHUB_OUTPUT"
+
+        # With require-complete off, everything not named is treated as deliberately
+        # skipped — this job is one shard, and coverage is enforced by the matrix it came
+        # from rather than here.
+        skip="$INPUT_SKIP"
+        if [ "$INPUT_REQUIRE_COMPLETE" != "true" ]; then
+          skip="$(python3 "${sentry_micro}/scripts/list_environments.py" "$project")"
+        fi
+
+        # Written to a file rather than a step output: the list is multi-line, and the
+        # build step should not be interpolating it back into a shell script.
+        python3 "${sentry_micro}/scripts/list_environments.py" "$project" \
+            --select "$INPUT_ENVIRONMENTS" --skip "$skip" \
+            > "${RUNNER_TEMP}/sentry-micro-environments.txt"
+        echo "building: $(tr '\n' ' ' < "${RUNNER_TEMP}/sentry-micro-environments.txt")"
+
+    - name: Install PlatformIO
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Skipped when the caller already set PlatformIO up, so this action composes with a
+        # workflow that caches toolchains itself.
+        if command -v pio >/dev/null 2>&1; then
+          echo "already installed: $(pio --version)"
+        else
+          pip install --upgrade platformio
+        fi
+
+    # Installed even when not uploading: `sentry-cli debug-files check` is what proves the
+    # build-id note actually landed, needs no credentials, and is the only step that can
+    # tell a stamped ELF from an unstamped one.
+    - name: Install sentry-cli
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.sentry-cli-version }}
+      run: |
+        set -euo pipefail
+        if command -v sentry-cli >/dev/null 2>&1; then
+          echo "already installed: $(sentry-cli --version)"
+        else
+          # The installer treats SENTRY_CLI_VERSION as a literal version and would go
+          # looking for a release called "latest"; leaving it unset is how you ask for one.
+          [ "$INPUT_VERSION" = "latest" ] || export SENTRY_CLI_VERSION="$INPUT_VERSION"
+          curl -sL https://sentry.io/get-cli/ | INSTALL_DIR="${RUNNER_TEMP}/sentry-cli" bash
+          echo "${RUNNER_TEMP}/sentry-cli" >> "$GITHUB_PATH"
+        fi
+
+    - name: Build, stamp and upload
+      id: build
+      shell: bash
+      env:
+        INPUT_ORG: ${{ inputs.org }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        SENTRY_MICRO_ROOT: ${{ steps.resolve.outputs.sentry-micro }}
+        PROJECT_PATH: ${{ steps.resolve.outputs.project }}
+        INPUT_RELEASE: ${{ inputs.release }}
+        INPUT_UPLOAD: ${{ inputs.upload }}
+        INPUT_INCLUDE_SOURCES: ${{ inputs.include-sources }}
+        INPUT_WAIT: ${{ inputs.wait }}
+      run: |
+        set -euo pipefail
+
+        # Exported only when actually given a value. Setting these as step-level `env:`
+        # would export the empty default too, which silently overrides a SENTRY_PROJECT
+        # the caller exported for the whole job — and the documented fallback to it would
+        # never fire.
+        if [ -n "$INPUT_ORG" ]; then export SENTRY_ORG="$INPUT_ORG"; fi
+        if [ -n "$INPUT_PROJECT" ]; then export SENTRY_PROJECT="$INPUT_PROJECT"; fi
+
+        # One release name across the matrix, so the variants of a build show up together
+        # in Sentry. The per-variant build-id is derived from release + environment, so
+        # sharing the name here does not make two binaries share an id.
+        release="$INPUT_RELEASE"
+        if [ -z "$release" ]; then
+          version="$(git -C "$GITHUB_WORKSPACE" describe --always --dirty 2>/dev/null \
+              || echo "${GITHUB_SHA:0:12}")"
+          release="${GITHUB_REPOSITORY##*/}@${version}"
+        fi
+        echo "release: ${release}"
+
+        summaries="${RUNNER_TEMP}/sentry-micro-summaries"
+        rm -rf "$summaries" && mkdir -p "$summaries"
+
+        args=()
+        [ "$INPUT_UPLOAD" = "true" ] || args+=(--no-upload)
+        [ "$INPUT_INCLUDE_SOURCES" = "true" ] || args+=(--no-sources)
+        [ "$INPUT_WAIT" = "true" ] || args+=(--no-wait)
+
+        # No `|| true` anywhere in this loop, on purpose. A variant that fails to build,
+        # stamp or upload has to fail the job: one variant quietly not being covered is
+        # the exact failure this action exists to prevent.
+        while read -r environment; do
+          [ -n "$environment" ] || continue
+          echo "::group::${environment}"
+          "${SENTRY_MICRO_ROOT}/scripts/release.sh" \
+            --env "$environment" \
+            --release "$release" \
+            --project-dir "$PROJECT_PATH" \
+            --json-summary "${summaries}/${environment}.json" \
+            "${args[@]}"
+          echo "::endgroup::"
+        done < "${RUNNER_TEMP}/sentry-micro-environments.txt"
+
+        variants="$(python3 "${SENTRY_MICRO_ROOT}/scripts/summarize_release.py" "$summaries" \
+            --github-summary "${GITHUB_STEP_SUMMARY:-/dev/null}")"
+        echo "variants=${variants}" >> "$GITHUB_OUTPUT"

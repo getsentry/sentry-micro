@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository — it builds, tests and formats. Saying so
+# explicitly means a compromised action in the toolchain cannot push a commit or open a
+# release with the token GitHub hands every job by default.
+permissions:
+  contents: read
+
 # A new push to a PR makes the in-flight run obsolete; toolchain downloads are slow
 # enough that letting superseded runs finish is a real waste of CI minutes.
 concurrency:
@@ -44,6 +50,12 @@ jobs:
       - name: Run tests
         run: pio test
 
+      # The release scripts have no other safety net: everything they guard against —
+      # an uncovered build variant, two variants sharing a debug id — fails silently in
+      # production and only shows up as <unknown> frames weeks later.
+      - name: Run release-script tests
+        run: test/test_release/test_release_scripts.sh
+
   build:
     name: Build ${{ matrix.env }}
     runs-on: ubuntu-latest
@@ -77,3 +89,51 @@ jobs:
       - name: Build wifi_basic
         working-directory: examples/wifi_basic
         run: pio run -e ${{ matrix.env }}
+
+  release-action:
+    name: Release action (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-esp32dev-${{ hashFiles('examples/wifi_basic/platformio.ini') }}
+          restore-keys: pio-esp32dev-
+
+      # Exercises the whole release chain — fixpoint build, build-id stamp, and the
+      # sentry-cli readback that proves the stamp landed — without publishing anything.
+      # Otherwise the action is only ever run at release time, which is the worst moment
+      # to discover it broke.
+      #
+      # One environment, not all five: the fixpoint builds each variant about three times,
+      # and what is under test here is the action rather than the compiler.
+      - uses: ./.github/actions/upload-debug-files
+        id: release
+        with:
+          project-dir: examples/wifi_basic
+          environments: esp32dev
+          require-complete: false
+          upload: false
+
+      - name: Check the action reported a debug id
+        run: |
+          set -euo pipefail
+          echo '${{ steps.release.outputs.variants }}' | python3 -c '
+          import json, sys, uuid
+          variants = json.load(sys.stdin)
+          assert len(variants) == 1, variants
+          # A malformed id would still round-trip through every step above and fail only
+          # server-side, where nothing reports it back.
+          uuid.UUID(variants[0]["debug_id"])
+          assert variants[0]["image_addr"] == "0x3f400020", variants[0]
+          print("ok:", variants[0]["debug_id"])
+          '

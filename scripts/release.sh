@@ -31,6 +31,9 @@ RELEASE=""
 PROJECT_DIR="examples/wifi_basic"
 DO_UPLOAD=1
 UPLOAD_FIRMWARE=0
+WAIT_FOR_PROCESSING=1
+INCLUDE_SOURCES=1
+JSON_SUMMARY=""
 
 usage() {
     sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
@@ -43,6 +46,10 @@ Options:
   -d, --project-dir DIR  PlatformIO project (default: examples/wifi_basic)
       --no-upload        build and stamp, but do not talk to Sentry
       --upload-firmware  also flash the result to a connected board
+      --no-wait          return as soon as the upload is accepted, without waiting
+                         for Sentry to finish processing it
+      --no-sources       upload debug info only, without embedding the source text
+      --json-summary F   write {env, release, code_id, debug_id, ...} to F
   -h, --help
 EOF
 }
@@ -54,12 +61,27 @@ while [ $# -gt 0 ]; do
         -d|--project-dir) PROJECT_DIR="$2"; shift 2 ;;
         --no-upload) DO_UPLOAD=0; shift ;;
         --upload-firmware) UPLOAD_FIRMWARE=1; shift ;;
+        --no-wait) WAIT_FOR_PROCESSING=0; shift ;;
+        --no-sources) INCLUDE_SOURCES=0; shift ;;
+        --json-summary) JSON_SUMMARY="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
 command -v pio >/dev/null 2>&1 || { echo "error: platformio (pio) not found" >&2; exit 1; }
+
+# A relative --project-dir is relative to this repository, which is what a developer
+# running this by hand means. The GitHub Action runs it against a project in *another*
+# repository's workspace, so an absolute path has to work too.
+case "$PROJECT_DIR" in
+    /*) PROJECT_PATH="$PROJECT_DIR" ;;
+    *)  PROJECT_PATH="${REPO_ROOT}/${PROJECT_DIR}" ;;
+esac
+if [ ! -f "${PROJECT_PATH}/platformio.ini" ]; then
+    echo "error: no platformio.ini in ${PROJECT_PATH}" >&2
+    exit 1
+fi
 
 # Default the release to something traceable back to a commit.
 if [ -z "$RELEASE" ]; then
@@ -97,7 +119,7 @@ export SENTRY_MICRO_RELEASE="$RELEASE"
 # variants stays readable in the issue stream.
 export SENTRY_MICRO_IMAGE_NAME="${ENVIRONMENT}.elf"
 
-ELF="${REPO_ROOT}/${PROJECT_DIR}/.pio/build/${ENVIRONMENT}/firmware.elf"
+ELF="${PROJECT_PATH}/.pio/build/${ENVIRONMENT}/firmware.elf"
 
 # Build until the measurements stop moving — usually three passes, occasionally two.
 #
@@ -121,7 +143,7 @@ MAX_PASSES=6
 PASS=1
 
 echo "→ building (pass ${PASS}: measure the image)"
-( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" >/dev/null )
+( cd "$PROJECT_PATH" && pio run -e "$ENVIRONMENT" >/dev/null )
 [ -f "$ELF" ] || { echo "error: no ELF at $ELF" >&2; exit 1; }
 
 eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export)"
@@ -135,7 +157,7 @@ while [ "$PASS" -lt "$MAX_PASSES" ]; do
     echo
     echo "→ building (pass ${PASS}: bake it in)"
     # Quiet except on the last useful pass, so the log is not three identical builds.
-    ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" >/dev/null )
+    ( cd "$PROJECT_PATH" && pio run -e "$ENVIRONMENT" >/dev/null )
 
     eval "$(python3 "${REPO_ROOT}/scripts/elf_info.py" "$ELF" --export \
         | sed 's/SENTRY_MICRO_IMAGE/MEASURED_IMAGE/')"
@@ -173,6 +195,19 @@ OBJCOPY="${OBJCOPY:-objcopy}"
 echo
 echo "→ stamping the build-id into the ELF"
 python3 "${REPO_ROOT}/scripts/stamp_build_id.py" "$ELF" --build-id "$BUILD_ID" --objcopy "$OBJCOPY"
+DEBUG_ID="$(python3 "${REPO_ROOT}/scripts/stamp_build_id.py" "$ELF" \
+    --build-id "$BUILD_ID" --objcopy "$OBJCOPY" --print-debug-id)"
+
+echo
+echo "→ verifying the debug file"
+# objcopy exits 0 whether or not the note ended up where Sentry looks for it, so read the
+# result back with the same library Sentry uses rather than assuming. Only optional when
+# we are not uploading — a release that skips this check is how you find out weeks later
+# that every frame is <unknown>.
+CHECK_ARGS=""
+[ "$DO_UPLOAD" -eq 1 ] || CHECK_ARGS="--optional"
+# shellcheck disable=SC2086 # CHECK_ARGS is intentionally word-split: empty means "omit".
+python3 "${REPO_ROOT}/scripts/check_debug_file.py" "$ELF" --expect-debug-id "$DEBUG_ID" $CHECK_ARGS
 
 if [ "$DO_UPLOAD" -eq 1 ]; then
     if ! command -v sentry-cli >/dev/null 2>&1; then
@@ -223,9 +258,19 @@ PYEOF
     echo
     echo "→ uploading debug files to Sentry"
     # --include-sources embeds the source text, so Sentry shows the offending line and not
-    # just its number. Harmless for a private project; drop it if the code is not yours.
-    # shellcheck disable=SC2086 # ORG_ARGS is intentionally word-split: empty means "omit".
-    sentry-cli debug-files upload --include-sources \
+    # just its number. Harmless for a private project; --no-sources turns it off, which is
+    # what you want if the repository is public but the firmware source is not.
+    #
+    # --id + --require-all turns "nothing matched, uploaded 0 files" — which sentry-cli
+    # otherwise reports as success — into an error. --wait makes the *server's* verdict
+    # visible: without it the command returns as soon as the bytes are accepted, and a
+    # file the server later rejects looks exactly like one it processed happily.
+    UPLOAD_ARGS=""
+    [ "$WAIT_FOR_PROCESSING" -eq 1 ] && UPLOAD_ARGS="--wait"
+    [ "$INCLUDE_SOURCES" -eq 1 ] && UPLOAD_ARGS="$UPLOAD_ARGS --include-sources"
+    # shellcheck disable=SC2086 # ORG_ARGS/UPLOAD_ARGS are word-split on purpose: empty means "omit".
+    sentry-cli debug-files upload $UPLOAD_ARGS \
+        --id "$DEBUG_ID" --require-all \
         $ORG_ARGS --project "$SENTRY_PROJECT" "$ELF"
 
     echo
@@ -240,12 +285,26 @@ fi
 if [ "$UPLOAD_FIRMWARE" -eq 1 ]; then
     echo
     echo "→ flashing"
-    ( cd "$PROJECT_DIR" && pio run -e "$ENVIRONMENT" -t upload )
+    ( cd "$PROJECT_PATH" && pio run -e "$ENVIRONMENT" -t upload )
+fi
+
+# Machine-readable, for the GitHub Action: it collects one of these per matrix variant and
+# renders the table showing which variants are covered and under which ids.
+if [ -n "$JSON_SUMMARY" ]; then
+    python3 - "$JSON_SUMMARY" "$ENVIRONMENT" "$RELEASE" "$BUILD_ID" "$DEBUG_ID" \
+        "$SENTRY_MICRO_IMAGE_ADDR" "$SENTRY_MICRO_IMAGE_SIZE" "$ELF" "$DO_UPLOAD" <<'PYEOF'
+import json, sys
+keys = ("environment", "release", "code_id", "debug_id",
+        "image_addr", "image_size", "elf", "uploaded")
+summary = dict(zip(keys, sys.argv[2:]))
+summary["uploaded"] = summary["uploaded"] == "1"
+with open(sys.argv[1], "w") as handle:
+    json.dump(summary, handle, indent=2)
+PYEOF
 fi
 
 echo
 echo "done. Events from this build carry:"
 echo "  release  ${RELEASE}"
 echo "  code_id  ${BUILD_ID}"
-echo "  debug_id $(python3 "${REPO_ROOT}/scripts/stamp_build_id.py" "$ELF" \
-    --build-id "$BUILD_ID" --objcopy "$OBJCOPY" --print-debug-id)"
+echo "  debug_id ${DEBUG_ID}"

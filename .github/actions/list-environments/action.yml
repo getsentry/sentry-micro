@@ -1,0 +1,74 @@
+name: List PlatformIO environments
+description: >-
+  Read every build variant out of a project's platformio.ini, as a matrix.
+  Generating the matrix from the file that defines it is what stops a new board from
+  quietly shipping without debug files.
+
+# Pair this with upload-debug-files: one job lists the variants, a matrix job uploads each
+# one. Because the list comes from platformio.ini rather than from a hand-written array,
+# adding [env:esp32-c6] to the file adds it to the release automatically, which is the
+# opposite of what a copied workflow does.
+#
+#   jobs:
+#     plan:
+#       runs-on: ubuntu-latest
+#       outputs:
+#         environments: ${{ steps.list.outputs.environments }}
+#       steps:
+#         - uses: actions/checkout@v5
+#         - uses: getsentry/sentry-micro/.github/actions/list-environments@main
+#           id: list
+#           with:
+#             project-dir: firmware
+#
+#     upload:
+#       needs: plan
+#       strategy:
+#         matrix:
+#           environment: ${{ fromJSON(needs.plan.outputs.environments) }}
+#       ...
+
+inputs:
+  project-dir:
+    description: PlatformIO project directory, relative to the workspace.
+    required: false
+    default: "."
+  skip-environments:
+    description: >-
+      Environments to leave out of the matrix, comma- or newline-separated. Naming one
+      here is a deliberate decision that its users do not get symbolicated crashes.
+    required: false
+    default: ""
+
+outputs:
+  environments:
+    description: JSON array of environment names, for `strategy.matrix`.
+    value: ${{ steps.list.outputs.environments }}
+  count:
+    description: How many environments are in the matrix.
+    value: ${{ steps.list.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    - name: List environments
+      id: list
+      shell: bash
+      # Inputs arrive as environment variables rather than being interpolated into the
+      # script. A project directory containing a quote would otherwise end the string and
+      # run whatever followed it.
+      env:
+        INPUT_PROJECT_DIR: ${{ inputs.project-dir }}
+        INPUT_SKIP: ${{ inputs.skip-environments }}
+      run: |
+        set -euo pipefail
+        # $GITHUB_ACTION_PATH is this directory inside the checked-out sentry-micro repo;
+        # three levels up is its root, where the scripts live.
+        sentry_micro="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        environments="$(python3 "${sentry_micro}/scripts/list_environments.py" \
+            "${GITHUB_WORKSPACE}/${INPUT_PROJECT_DIR}" --skip "$INPUT_SKIP" --json)"
+        {
+          echo "environments=${environments}"
+          echo "count=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$environments")"
+        } >> "$GITHUB_OUTPUT"
+        echo "matrix: ${environments}"

@@ -87,3 +87,19 @@
   dump outlives that boot (delivery failed, or the board was power-cycled or reflashed
   first), and the old logic tagged those `crashed: false` — so an alert on `crashed:true`
   would skip exactly the crashes that were hardest to deliver.
+- Reusable GitHub Actions for the release chain: `upload-debug-files` builds every variant
+  a project declares, stamps each with its own build-id, uploads the debug files and
+  verifies the result; `list-environments` turns `platformio.ini` into a job matrix.
+  Symbolication coverage is now derived from the file that defines the variants, so adding
+  a board fails the release until someone decides whether it ships — rather than shipping
+  a variant whose users silently get raw addresses.
+- Debug-file uploads are now checked rather than assumed. `objcopy` exits 0 whether or not
+  the build-id note landed, and `sentry-cli` reports "matched 0 files" as success, so
+  `scripts/check_debug_file.py` reads the stamped ELF back with the same library Sentry
+  uses, the upload passes `--id ... --require-all`, and `--wait` makes the server's verdict
+  visible instead of only the fact that the bytes were accepted.
+- A release that produces two variants with the same `debug_id` now fails. Sentry would
+  resolve one binary's addresses against the other and print confidently wrong frames,
+  which is worse than no symbolication because nothing about the result looks wrong.
+- `release.sh` gained `--no-wait`, `--no-sources` and `--json-summary`, and accepts an
+  absolute `--project-dir` so it can run against a project in another repository.
