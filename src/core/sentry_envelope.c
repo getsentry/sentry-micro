@@ -275,17 +275,26 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_kv_string(
             writer, "type", crash->exception_type[0] ? crash->exception_type : "Panic");
 
-        char value[96];
+        /*
+         * Say only what the title does not. Sentry titles the issue from `type`, so
+         * repeating it here spends the densest line in the UI on a duplicate, and the PC is
+         * frame 0's `instruction_addr` — with debug files the reader gets a function and a
+         * line number instead of the hex, and without them the hex is unusable anyway.
+         *
+         * Leaving it out also keeps `value` build-independent. Grouping normally keys off
+         * the stack trace, but an event that carries no frames falls back to type + value,
+         * and a PC in that string would split one real issue into one per firmware build.
+         *
+         * The faulting data address is the exception to all of that: on Load/StoreProhibited
+         * `accessing 0x00000000` is the difference between a null dereference and a wild
+         * pointer, and no amount of symbolication recovers it from the stack. When there is
+         * no such address, `value` is omitted entirely — Sentry renders a bare type cleanly.
+         */
         if (crash->exception_addr_valid) {
-            snprintf(value, sizeof(value), "%s at 0x%08x, accessing 0x%08x",
-                crash->exception_type[0] ? crash->exception_type : "Panic",
-                (unsigned)crash->exception_pc, (unsigned)crash->exception_addr);
-        } else {
-            snprintf(value, sizeof(value), "%s at 0x%08x",
-                crash->exception_type[0] ? crash->exception_type : "Panic",
-                (unsigned)crash->exception_pc);
+            char value[32];
+            snprintf(value, sizeof(value), "accessing 0x%08x", (unsigned)crash->exception_addr);
+            sentry_json_kv_string(writer, "value", value);
         }
-        sentry_json_kv_string(writer, "value", value);
         sentry_json_kv_string_opt(writer, "thread_id", crash->task_name);
         /* `native` here too, so this exception goes through native symbolication. */
         sentry_json_kv_string(writer, "platform", "native");
@@ -294,6 +303,21 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_object_begin(writer);
         sentry_json_key(writer, "frames");
         sentry_json_array_begin(writer);
+        /*
+         * An unwinder that came back with nothing — a corrupted stack, or a RISC-V dump
+         * ESP-IDF declined to walk — still leaves the PC, which *is* the crashing frame by
+         * definition. Emit it as the one frame so it reaches symbolication and still names
+         * the function that died; `value` no longer carries it, so without this the address
+         * would be nowhere in the event. `frames_captured` stays at the unwinder's own
+         * count of 0: this frame comes from the exception registers, not from a walk.
+         */
+        if (crash->frame_count == 0 && crash->exception_pc != 0) {
+            char address[24];
+            snprintf(address, sizeof(address), "0x%08x", (unsigned)crash->exception_pc);
+            sentry_json_object_begin(writer);
+            sentry_json_kv_string(writer, "instruction_addr", address);
+            sentry_json_object_end(writer);
+        }
         /*
          * Reversed. ESP-IDF reports the backtrace innermost-first (the crashing frame at
          * index 0); Sentry renders frames oldest-first, with the crash at the bottom. Emit

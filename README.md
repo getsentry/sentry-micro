@@ -40,7 +40,7 @@ working demonstration that the ingest and symbolication side already supports it
 
 ```
 StoreProhibited
-StoreProhibited at 0x4016984d, accessing 0x00000000
+accessing 0x00000000
 
   esp32dev.elf  0x4016984d  demo_crash_innermost (main.cpp:221)
   esp32dev.elf  0x400d2e89  demo_crash_middle    (main.cpp:224)

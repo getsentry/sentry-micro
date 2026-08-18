@@ -549,9 +549,63 @@ static void test_crash_event_carries_an_exception(void)
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"StoreProhibited\""));
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"thread_id\":\"loopTask\""));
     /* The value line carries the faulting address, which is half the diagnosis for a null
-     * dereference before any symbolication happens at all. */
-    TEST_ASSERT_NOT_NULL(strstr(buf, "accessing 0x00000000"));
+     * dereference before any symbolication happens at all — and nothing else. Sentry titles
+     * the issue from `type`, so repeating it here would spend the densest line in the UI on
+     * a duplicate, and the PC belongs in the stack trace where symbolication can name it. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"value\":\"accessing 0x00000000\""));
+    TEST_ASSERT_NULL(strstr(buf, "StoreProhibited at"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"instruction_addr\":\"0x400d1234\""));
+}
+
+/**
+ * With no faulting address there is nothing to say that the title does not, so `value` is
+ * omitted rather than filled with the type again or with the PC.
+ *
+ * The PC matters here specifically: it moves on every build. Grouping normally keys off the
+ * stack trace, but an event that carries no frames falls back to type + value, and a PC in
+ * that string would split one real issue into one issue per firmware version.
+ */
+static void test_exception_without_a_faulting_address_omits_value(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    snprintf(crash.exception_type, sizeof(crash.exception_type), "IntegerDivideByZero");
+    crash.exception_addr_valid = false;
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"IntegerDivideByZero\""));
+    /* `"values"` is the array around the exception and must not be mistaken for a match. */
+    TEST_ASSERT_NULL(strstr(buf, "\"value\":"));
+    /* The address the reader actually wants is still there, as a frame. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"instruction_addr\":\"0x400d1234\""));
+}
+
+/**
+ * A dump whose stack could not be walked still knows where it died.
+ *
+ * `value` no longer carries the PC, so a coredump that yielded zero frames would otherwise
+ * produce an event with no address anywhere in it — the weakest event there is, stripped of
+ * the one number it did have. The PC is frame 0 by definition, so it goes in the stack trace
+ * where the debug files can turn it into a function and a line.
+ */
+static void test_pc_becomes_the_frame_when_the_unwinder_found_none(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_coredump_t crash = sample_coredump();
+    crash.frame_count = 0;
+    crash.truncated = true;
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"instruction_addr\":\"0x400d1234\""));
+    /* Honest about provenance: the unwinder captured nothing. This frame came from the
+     * exception registers, so the count stays 0 rather than claiming a walk that failed. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"frames_captured\":0"));
 }
 
 static void test_frames_are_reversed_for_sentry(void)
@@ -698,6 +752,8 @@ int main(void)
     RUN_TEST(test_deferred_crash_is_still_tagged_as_a_crash);
     RUN_TEST(test_boot_event_without_a_coredump_is_not_a_crash);
     RUN_TEST(test_crash_event_carries_an_exception);
+    RUN_TEST(test_exception_without_a_faulting_address_omits_value);
+    RUN_TEST(test_pc_becomes_the_frame_when_the_unwinder_found_none);
     RUN_TEST(test_frames_are_reversed_for_sentry);
     RUN_TEST(test_truncated_backtraces_say_so);
     RUN_TEST(test_event_without_a_crash_has_no_exception);
