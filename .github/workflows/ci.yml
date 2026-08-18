@@ -37,10 +37,12 @@ jobs:
           python-version: "3.12"
       - name: Install PlatformIO
         run: pip install --upgrade platformio
-      # The portable core builds and runs on the host, so this gate costs seconds and
-      # catches DSN/envelope regressions long before any board is involved.
+      # The portable core (C) and the portable transport code (C++, e.g. AutoTransport)
+      # both build and run on the host, so this gate costs seconds and catches regressions
+      # long before any board is involved. No -e: runs every native* environment, so a new
+      # one added later is covered without this step needing to know its name.
       - name: Run tests
-        run: pio test -e native
+        run: pio test
 
   build:
     name: Build ${{ matrix.env }}

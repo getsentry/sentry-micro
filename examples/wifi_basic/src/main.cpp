@@ -21,6 +21,7 @@
 
 #include <device/sentry_storage_nvs.h>
 #include <sentry_micro.h>
+#include <transport/sentry_transport_auto.hpp>
 #include <transport/sentry_transport_serial.hpp>
 #include <transport/sentry_transport_wifi.hpp>
 
@@ -79,6 +80,10 @@ static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 /* File scope, not locals: the SDK stores a pointer, so these have to outlive setup(). */
 static sentry::WiFiTransport wifi_transport;
 static sentry::SerialTransport serial_transport;
+/* WiFi first: it can actually tell whether it is available. Serial always claims to be
+ * (there is no way to detect a listener on a bare UART), so it has to go last — anything
+ * placed after it would never be reached. */
+static sentry::AutoTransport transport({ &wifi_transport, &serial_transport });
 
 /**
  * List what the radio can actually see.
@@ -425,24 +430,28 @@ void setup()
 #endif
 
     /*
-     * Pick a route: WiFi if the device has one, otherwise relay through whatever is on the
-     * other end of the USB cable (scripts/serial_relay.py). This is a hand-rolled version
-     * of the auto-selection the SDK will eventually do itself — "WiFi if connected, else a
-     * registered relay, else buffer to flash" — and it is what makes a board with no
-     * usable network still testable.
+     * Turn on TLS verification before any send can happen. Without set_ca_cert() the
+     * transport sends encrypted but *unauthenticated* — a device will talk to any server
+     * that answers its DSN host. The root in certs.h verifies the public Sentry cloud out
+     * of the box; swap in your ingest host's root instead if you self-host (see certs.h).
+     *
+     * Unconditional, not inside a "did WiFi come up?" branch: `transport` re-picks a route
+     * on every delivery attempt, so WiFi may be chosen long after setup() has returned.
      */
-    if (connect_wifi()) {
-        /* Turn on TLS verification. Without set_ca_cert() the transport sends encrypted
-         * but *unauthenticated* — a device will talk to any server that answers its DSN
-         * host. The root in certs.h verifies the public Sentry cloud out of the box;
-         * swap in your ingest host's root instead if you self-host (see certs.h). */
-        wifi_transport.set_ca_cert(SENTRY_INGEST_CA_CERT);
-        sentry::set_transport(wifi_transport);
-        Serial.println("[sentry] transport: wifi (tls verified)");
-    } else {
-        sentry::set_transport(serial_transport);
-        Serial.println("[sentry] transport: serial relay (run scripts/serial_relay.py)");
-    }
+    wifi_transport.set_ca_cert(SENTRY_INGEST_CA_CERT);
+
+    /*
+     * Join WiFi if possible — connect_wifi() prints the outcome either way, and runs a
+     * scan diagnostic on failure. Its return value is not used to pick a transport, unlike
+     * before: `transport` (file scope, declared above) already tries WiFi first and falls
+     * back to the serial relay on every delivery attempt, re-evaluated fresh each time —
+     * so a WiFi connection that comes up *after* this point still gets used, with no
+     * reboot and no code here watching for the transition.
+     */
+    connect_wifi();
+    sentry::set_transport(transport);
+    Serial.println("[sentry] transport: auto (wifi with tls verification, falling back to "
+                   "the serial relay — run scripts/serial_relay.py if wifi is unreachable)");
 
     /* A recovered crash is the more interesting event, and reporting both on the same boot
      * would double up. */
