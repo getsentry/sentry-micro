@@ -28,7 +28,7 @@ brew install getsentry/tools/sentry-cli        # only for symbolication
 git clone https://github.com/getsentry/sentry-micro.git
 cd sentry-micro
 
-pio test -e native                             # 60 host tests, ~3s, no hardware
+pio test -e native                             # host tests, ~3s, no hardware
 cd examples/wifi_basic && pio run               # compiles for 4 chip variants
 ```
 
@@ -119,7 +119,8 @@ and 460800 die with "Unable to verify flash chip connection" immediately after e
 ## Working on it
 
 ```bash
-pio test -e native            # host tests: DSN, envelope, buffer, relay protocol
+pio test                      # host tests: DSN, envelope, buffer, relay protocol,
+                               # transport routing (AutoTransport)
 scripts/format.sh             # clang-format 22.1.8, pinned; --check in CI
 cd examples/wifi_basic && pio run && pio run -e esp32-c6
 ```

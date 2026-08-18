@@ -97,7 +97,8 @@ src/                        the library
     sentry_transport.hpp        C++ base class over the C interface
     sentry_transport_wifi.*     HTTPS straight to ingest
     sentry_transport_serial.*   relay through a USB host
-test/                       host unit tests (Unity), run with `pio test -e native`
+    sentry_transport_auto.hpp   picks a route per delivery attempt, from a list of others
+test/                       host unit tests (Unity), run with `pio test`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
@@ -267,6 +268,36 @@ https — exact match — so a buggy or hostile device cannot use its host as an
 That is non-negotiable when the relay is a user's *phone*, and it is enforced identically
 here. Verified refused: `evil.com`, `…sentry.io.evil.com`, `evil-…sentry.io`, a plaintext
 downgrade, `https://…sentry.io@evil.com/`, `file:///etc/passwd`, and `169.254.169.254`.
+
+## Picking a route automatically
+
+A device with more than one way to reach Sentry — WiFi normally, a serial or BLE relay as a
+fallback — needs something to choose between them on every delivery attempt, not just once
+at boot. `AutoTransport` is that: an ordered list of other transports, re-evaluated every
+time.
+
+```cpp
+#include <transport/sentry_transport_auto.hpp>
+
+static sentry::WiFiTransport wifi_transport;
+static sentry::SerialTransport serial_transport;
+static sentry::AutoTransport transport({&wifi_transport, &serial_transport});
+
+sentry::set_transport(transport);
+```
+
+It calls each transport's `is_available()` in order and delegates to the first one that says
+yes — cheap and non-blocking, so a dead transport costs nothing beyond that check, never a
+connect timeout. Because that check runs again on every attempt rather than once, a device
+that boots with no WiFi and starts on the relay picks up WiFi transparently the moment it
+associates, with no reboot and no code watching for the transition.
+
+**Ordering matters, and it is easy to get backwards.** `SerialTransport::is_available()`
+always returns `true` — there is no way to detect a listener on a bare UART, so it only
+discovers the truth via its own timeout inside `send()`. Anything placed *after* it in the
+list is therefore unreachable, since `AutoTransport` always picks the first available one.
+Put transports that can tell the truth about availability first, and anything that always
+claims to be available last: `{&wifi, &relay, &serial}`, never `{&wifi, &serial, &relay}`.
 
 ## Offline buffering
 
@@ -486,7 +517,8 @@ that partition.
 ## Development
 
 ```bash
-pio test -e native                     # host unit tests for the portable core
+pio test                                # host unit tests: the portable C core (native) and
+                                         # the portable C++ transport routing (native_cxx)
 cd examples/wifi_basic && pio run      # compile-check against every ESP32 variant
 ```
 
@@ -533,23 +565,13 @@ Implemented today:
       deliberate null dereference on an ESP32-PICO-D4
 
 - [x] Generic relay protocol + `RelayTransport` — chunked binary framing for BLE-class links
+- [x] `AutoTransport` — picks a route per delivery attempt from an ordered list of other
+      transports, host-tested against fakes; replaces the hand-rolled `if (connected) ...
+      else ...` `examples/wifi_basic` had
 
 Not done:
 
-- [ ] **`AutoTransport`** — pick a route per attempt: WiFi if the station is associated, else
-      the relay if a host is attached, else report `SEND_UNAVAILABLE` so the core buffers.
-      About 25 lines. The proposal specifies exactly this as SDK-level behaviour ("WiFi if
-      connected → else a registered relay → else buffer to flash and retry later"), and
-      `Transport::is_available()` exists to support it — it is documented as the hook the
-      auto-select logic uses to skip a dead transport without paying for a connect timeout.
 
-      It is currently hand-rolled twice: in ChromaBay's `esp32/src/sentry_reporting.h`, and
-      inline in `examples/wifi_basic`, which says in a comment that it is standing in for
-      this. Two copies of a routing rule is how they drift. Every adopter with more than one
-      transport needs the same object, so it belongs here rather than in each firmware.
-      (Raised by the ChromaBay side, who kept it local to avoid widening the SDK diff
-      mid-edit.)
-- [ ] **Breadcrumbs** — what the device was doing before it died
 - [ ] **Sessions / release health** — crash-free rate per release across a fleet
 - [ ] **WLED usermod** — the ready-made audience
 - [ ] Full RISC-V backtraces (needs server-side unwinding of the stack dump)
