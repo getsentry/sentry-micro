@@ -66,11 +66,6 @@ PLATFORMIO_BUILD_FLAGS='-D SENTRY_DEMO_CRASH=1' scripts/release.sh -e esp32dev -
 The board crashes once per power-on, reboots, reports the crash on the next boot, and erases
 the core dump once it is delivered.
 
-Reflashing to get one crash costs a minute at 115200 baud. To crash on demand instead, build
-with a button pin — `-D SENTRY_CRASH_BUTTON_PIN=39` is the M5Stack's left-hand button — and
-press it whenever you want the loop to run again. On a bare devkit note that GPIO 34-39 are
-input-only with no internal pull-up, so that pin needs an external pull-up or it floats and
-crashes at random.
 
 ## Traps
 

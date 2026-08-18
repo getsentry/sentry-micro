@@ -141,7 +141,24 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_kv_string_opt(writer, "device_id", device->device_id);
         sentry_json_kv_string(
             writer, "reset_reason", sentry_reset_reason_name(device->reset_reason));
-        sentry_json_kv_bool(writer, "crashed", sentry_reset_reason_is_crash(device->reset_reason));
+        /*
+         * "This event describes a crash", not "this boot followed one".
+         *
+         * Usually the same thing: the core dump is read on the boot right after the panic,
+         * so the reset reason is `panic` and both readings agree. They come apart when the
+         * dump outlives that boot — delivery failed and it sat in flash, or the board was
+         * reflashed or power-cycled before it could be sent. Then a genuine crash report
+         * arrives from a `poweron` boot, and keying this off the reset reason alone tagged
+         * it `crashed: false`. An alert filtered on `crashed:true` would silently skip
+         * exactly the crashes that were hardest to deliver.
+         *
+         * `reset_reason` deliberately keeps describing the boot that did the reporting,
+         * because that is what it is. The pair reads oddly together, which is what
+         * `crash_deferred` in the esp32 context below exists to explain.
+         */
+        sentry_json_kv_bool(writer, "crashed",
+            sentry_reset_reason_is_crash(device->reset_reason)
+                || (event->coredump && event->coredump->available));
     }
     sentry_json_kv_string_opt(writer, "board", event->board);
     if (event->coredump && event->coredump->available) {
@@ -198,6 +215,19 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
         sentry_json_kv_uint(writer, "frames_captured", event->coredump->frame_count);
         sentry_json_kv_bool(writer, "backtrace_truncated", event->coredump->truncated);
         sentry_json_kv_string_opt(writer, "crash_task", event->coredump->task_name);
+        /*
+         * True when the core dump was found on a boot that did not itself follow the crash
+         * — delivery failed and it waited in flash, or the board was power-cycled or
+         * reflashed first.
+         *
+         * Worth saying out loud, because every other number in this context (uptime,
+         * free_heap, min_free_heap) and the whole `device` context describe the boot that
+         * *sent* the report, not the one that died. On a deferred report they are
+         * unrelated to the crash and reading them as "the state at the time of the crash"
+         * would be wrong.
+         */
+        sentry_json_kv_bool(writer, "crash_deferred",
+            !(device && sentry_reset_reason_is_crash(device->reset_reason)));
     }
     if (device) {
         sentry_json_kv_uint(writer, "chip_revision", device->chip_revision);

@@ -75,11 +75,17 @@
   It asked for a 1000ms dwell per channel, but Arduino's `scanNetworks()` waits a
   hard-coded 10s for a scan that visits ~13 channels; it always timed out and returned -2,
   and the failed call left `WIFI_SCANNING_BIT` set so every retry then reported -1 forever.
-- `-D SENTRY_CRASH_BUTTON_PIN=<gpio>` crashes the example on a button press, so the
-  crash -> reboot -> report -> symbolicate loop is repeatable without a one-minute reflash
-  each time. `-D SENTRY_DEMO_SCAN=1` runs the network scan on every boot.
+- `-D SENTRY_DEMO_SCAN=1` runs the network scan on every boot, not just after a failed
+  connect — a diagnostic nobody can exercise is how the one above came to be broken.
 - `image_size` is emitted as a JSON number rather than a hex string. Relay types it as a
   plain unsigned integer — unlike `image_addr` right beside it, which is an address and does
   take `"0x..."` — so every event we ever sent had the field discarded with
   `expected an unsigned integer`. Ingest still answered 200 and the issue still rendered;
   the only trace was an "Event Processing Errors" panel on the event page.
+- A crash report is tagged `crashed: true` whenever it carries a core dump, not only when
+  the boot that sent it was itself a crash. The two normally agree; they come apart when the
+  dump outlives that boot (delivery failed, or the board was power-cycled or reflashed
+  first), and the old logic tagged those `crashed: false` — so an alert on `crashed:true`
+  would skip exactly the crashes that were hardest to deliver. The new `crash_deferred` flag
+  in the esp32 context marks them, and warns that the heap and uptime alongside it describe
+  the reporting boot rather than the crash.

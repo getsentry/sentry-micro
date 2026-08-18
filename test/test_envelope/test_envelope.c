@@ -498,6 +498,63 @@ static sentry_coredump_t sample_coredump(void)
     return crash;
 }
 
+/**
+ * A crash report is tagged `crashed` even when the boot that sent it was not itself a crash.
+ *
+ * The core dump normally gets read on the boot right after the panic, so the reset reason
+ * agrees. It comes apart when the dump outlives that boot — delivery failed and it waited in
+ * flash, or the board was power-cycled or reflashed first. Keying the tag off the reset
+ * reason alone produced a fatal crash event tagged `crashed: false`, seen in production on
+ * an event whose dump survived a reflash. Any alert filtered on `crashed:true` would skip
+ * exactly the crashes that were hardest to deliver.
+ */
+static void test_deferred_crash_is_still_tagged_as_a_crash(void)
+{
+    sentry_device_info_t device = sample_device();
+    /* The reporting boot was an ordinary power-on; the crash happened some boots ago. */
+    device.reset_reason = SENTRY_RESET_POWERON;
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crashed\":true"));
+    /* The reset reason still honestly describes the boot that did the reporting ... */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"reset_reason\":\"poweron\""));
+    /* ... and this is what explains the otherwise contradictory-looking pair. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crash_deferred\":true"));
+}
+
+/** The ordinary path: panic, reboot, report immediately. Nothing deferred about it. */
+static void test_crash_reported_on_the_next_boot_is_not_deferred(void)
+{
+    sentry_device_info_t device = sample_device();
+    device.reset_reason = SENTRY_RESET_PANIC;
+    sentry_coredump_t crash = sample_coredump();
+    sentry_event_t event = sample_event(&device);
+    event.coredump = &crash;
+
+    char buf[3072];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crashed\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crash_deferred\":false"));
+}
+
+/** A plain boot report must not claim a crash just because the tag logic got clever. */
+static void test_boot_event_without_a_coredump_is_not_a_crash(void)
+{
+    sentry_device_info_t device = sample_device();
+    device.reset_reason = SENTRY_RESET_POWERON;
+    sentry_event_t event = sample_event(&device);
+    event.coredump = NULL;
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"crashed\":false"));
+    TEST_ASSERT_NULL(strstr(buf, "crash_deferred"));
+}
+
 static void test_crash_event_carries_an_exception(void)
 {
     sentry_device_info_t device = sample_device();
@@ -601,6 +658,9 @@ int main(void)
     RUN_TEST(test_event_contains_the_fields_ingest_needs);
     RUN_TEST(test_event_omits_the_timestamp_when_the_clock_is_unset);
     RUN_TEST(test_event_omits_unknown_optional_fields);
+    RUN_TEST(test_deferred_crash_is_still_tagged_as_a_crash);
+    RUN_TEST(test_crash_reported_on_the_next_boot_is_not_deferred);
+    RUN_TEST(test_boot_event_without_a_coredump_is_not_a_crash);
     RUN_TEST(test_crash_event_carries_an_exception);
     RUN_TEST(test_frames_are_reversed_for_sentry);
     RUN_TEST(test_truncated_backtraces_say_so);
