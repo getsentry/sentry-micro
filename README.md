@@ -182,6 +182,50 @@ sentry_init(&options);
 Crash reporting must never be load-bearing: a firmware should always be able to ignore that
 return value and carry on.
 
+## Reporting something that is not a crash
+
+Crashes report themselves. For everything else — an OTA that failed its signature check, a
+sensor that stopped answering, a config that would not parse — there is one call:
+
+```cpp
+sentry::capture_message(SENTRY_LEVEL_WARNING, "OTA aborted: bad signature");
+```
+
+```c
+sentry_capture_message(SENTRY_LEVEL_WARNING, "OTA aborted: bad signature");
+```
+
+It builds the event, frames the envelope, sends it, and buffers it for a later retry if
+there is no route yet. The message is used during the call and never retained, so a
+`snprintf` into a stack buffer is fine. It costs `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` of
+the caller's stack and no heap at all, and it sends inline — fine at boot, worth reading
+[Delivery model](#delivery-model) before calling it from a render loop.
+
+### It is throttled, on purpose
+
+The API is easy to call from a loop, and a loop runs forever. A sensor that starts failing
+at 50 Hz does not produce one issue in Sentry — it produces 50 events a second, from a
+device nobody is watching, against a quota you are paying for. And the first thing you lose
+when a quota runs out is crash reports.
+
+So two limits apply before an event is built, both configurable and both able to be turned
+off with `0`:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `message_repeat_window_ms` | `10000` | The same message at the same level is sent at most once per window |
+| `max_messages_per_minute` | `10` | Ceiling on everything else, whatever it says |
+
+Repeats are checked first, so a message stuck in a loop cannot spend the budget a
+*different* message needed. The window is measured from the last message that was **sent**,
+not the last one attempted — a caller faster than the window still reports once per window
+rather than going silent after the first event.
+
+`sentry_capture_message()` returns `SENTRY_SEND_RATE_LIMITED` when the throttle drops
+something, and `sentry_suppressed_count()` says how many it has dropped since init. Crash
+reports do not go through any of this: a throttle that could eat the panic you rebooted
+from would be worse than no throttle.
+
 ## WiFi transport
 
 For a device on WiFi, this is all of it:
@@ -636,6 +680,9 @@ Implemented today:
 - [x] `AutoTransport` — picks a route per delivery attempt from an ordered list of other
       transports, host-tested against fakes; replaces the hand-rolled `if (connected) ...
       else ...` `examples/wifi_basic` had
+- [x] `capture_message()` for non-crash events, with a client-side throttle (repeat
+      suppression plus a per-minute ceiling) so a message in a loop cannot exhaust the
+      quota that crash reports come out of
 
 Not done:
 
@@ -646,12 +693,15 @@ Not done:
 
 Built but never exercised on hardware, which is worth knowing before trusting them:
 
-- `WiFiTransport` has never delivered an event. The bench board cannot reach a 2.4GHz
-  network, so every on-device delivery so far has gone through the serial relay.
-- The offline buffer has been shown to persist and drain within a single boot; its
-  across-a-power-cycle path is covered only by host tests.
 - The RISC-V coredump reader compiles and matches the ESP-IDF struct, but has never run —
   there is no C-series board here.
+- TLS certificate verification. `WiFiTransport` runs with it off unless you call
+  `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
+- Every board except the classic ESP32. The S2, S3, C3 and C6 are covered by compilation
+  only.
+
+`WiFiTransport` delivery and the offline buffer surviving a power cycle *were* on this list;
+both have since been confirmed on an ESP32-PICO-D4 over WiFi — see ONBOARDING.md.
 
 ## Onboarding
 

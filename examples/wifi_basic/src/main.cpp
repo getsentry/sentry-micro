@@ -57,6 +57,11 @@
 #    define SENTRY_DEMO_SCAN 0
 #endif
 
+/* Build with -D SENTRY_DEMO_FLOOD=1 to watch the capture throttle work. */
+#ifndef SENTRY_DEMO_FLOOD
+#    define SENTRY_DEMO_FLOOD 0
+#endif
+
 /* Identifies this build in Sentry. Set by scripts/release.sh so the release the firmware
  * reports is the same one the debug files were uploaded under; the fallback only applies to
  * a plain `pio run`. */
@@ -315,6 +320,13 @@ static bool report_crash()
         return true;
     }
 
+    /* The only place left in this example that shows the raw ndjson, now that the boot
+     * report goes through sentry::capture_message(). Worth seeing once: it is the whole
+     * protocol, and any transport that can move these bytes is a complete implementation. */
+    Serial.printf("── envelope (%u bytes) ───────────────────────\n", (unsigned)needed);
+    Serial.print(envelope);
+    Serial.println("──────────────────────────────────────────────");
+
     sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
     Serial.printf("[sentry] crash report: %s (http %u)\n", send_result_name(response.result),
         (unsigned)response.http_status);
@@ -333,50 +345,62 @@ static bool report_crash()
 
 static void report_boot()
 {
-    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
-    sentry_event_t event;
-    if (!sentry_event_prepare(&event, event_id)) {
-        Serial.println("[sentry] could not prepare an event (SDK disabled?)");
-        return;
-    }
-
     const sentry_device_info_t &dev = sentry::device_info();
     bool crashed = sentry_reset_reason_is_crash(dev.reset_reason);
 
     char message[96];
     snprintf(
         message, sizeof(message), "Device booted: %s", sentry_reset_reason_name(dev.reset_reason));
-    event.message = message;
-    /* A crash is fatal; an ordinary power-on is just news. Getting this wrong would either
+
+    /* The whole event, in one call. Everything report_crash() above does by hand — fresh
+     * event id, release, device context, live heap and uptime, envelope framing, send,
+     * buffer on failure — happens inside here. Build with `options.debug` to see the id.
+     *
+     * A crash is fatal; an ordinary power-on is just news. Getting this wrong would either
      * page someone for a normal reboot or bury a real panic. */
-    event.level = crashed ? SENTRY_LEVEL_FATAL : SENTRY_LEVEL_INFO;
+    sentry_response_t response
+        = sentry::capture_message(crashed ? SENTRY_LEVEL_FATAL : SENTRY_LEVEL_INFO, message);
 
-    /* Stack-allocated: the no-allocation rule applies to the reporting path, and 2 KB of
-     * an 8 KB loop-task stack is affordable where a fragmented heap may not be. */
-    char envelope[2048];
-    size_t needed = sentry_envelope_write(envelope, sizeof(envelope), &event);
-    if (needed == 0 || needed >= sizeof(envelope)) {
-        Serial.printf("[sentry] envelope needs %u bytes, buffer is %u\n", (unsigned)needed,
-            (unsigned)sizeof(envelope));
-        return;
-    }
-
-    Serial.printf("── envelope (%u bytes) ───────────────────────\n", (unsigned)needed);
-    Serial.print(envelope);
-    Serial.println("──────────────────────────────────────────────");
-
-    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
     Serial.printf(
         "[sentry] %s (http %u", send_result_name(response.result), (unsigned)response.http_status);
     if (response.retry_after_ms > 0) {
         Serial.printf(", retry after %ums", (unsigned)response.retry_after_ms);
     }
     Serial.println(")");
-
-    if (response.result == SENTRY_SEND_OK) {
-        Serial.printf("[sentry] event %s is in Sentry\n", event_id);
-    }
 }
+
+/**
+ * Show what the throttle does, because a limiter you cannot see is one you cannot trust.
+ *
+ * Build with `-D SENTRY_DEMO_FLOOD=1`. It captures the same message twenty times in a
+ * tight loop — a failing sensor read, more or less exactly — and then a different one, to
+ * make the point that suppressing a repeat does not cost the budget some *other* message
+ * needed. Expect one event from the first twenty, and one from the last call.
+ */
+#if SENTRY_DEMO_FLOOD
+static void demo_flood()
+{
+    Serial.println();
+    Serial.println("── throttle demo ─────────────────────────────");
+
+    uint32_t captured = 0;
+    for (int i = 0; i < 20; i++) {
+        /* RATE_LIMITED is the throttle's answer. Any other result means the event was
+         * built and handed to the transport, whether or not the radio was up — which is a
+         * different question, and not the one this demo is about. */
+        if (sentry::capture_message(SENTRY_LEVEL_WARNING, "Sensor read failed").result
+            != SENTRY_SEND_RATE_LIMITED) {
+            captured++;
+        }
+    }
+    Serial.printf("20 identical captures -> %u became events, %u suppressed\n", (unsigned)captured,
+        (unsigned)sentry::suppressed_count());
+
+    sentry_response_t other = sentry::capture_message(SENTRY_LEVEL_WARNING, "Something else");
+    Serial.printf("a different message   -> %s\n", send_result_name(other.result));
+    Serial.println("──────────────────────────────────────────────");
+}
+#endif
 
 void setup()
 {
@@ -458,6 +482,10 @@ void setup()
     if (!report_crash()) {
         report_boot();
     }
+
+#if SENTRY_DEMO_FLOOD
+    demo_flood();
+#endif
 
 #if SENTRY_DEMO_CRASH
     /* Crash only when this boot did *not* follow a crash, so one power-on produces exactly

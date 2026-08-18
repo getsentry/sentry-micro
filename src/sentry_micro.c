@@ -32,6 +32,9 @@ typedef struct {
      * crash until the whole project is rate-limited for everyone using it.
      */
     uint64_t retry_after_uptime_ms;
+
+    /** Local ceiling on captured messages; see sentry_throttle.h for why it is not optional. */
+    sentry_throttle_t throttle;
 } sentry_state_t;
 
 static sentry_state_t g_state;
@@ -59,6 +62,11 @@ void sentry_options_defaults(sentry_options_t *options)
     }
     memset(options, 0, sizeof(*options));
     options->environment = "production";
+    /* Deliberately not unlimited. A capture API with no ceiling turns one looping bug into
+     * an exhausted quota, and the first thing you lose when the quota is gone is crash
+     * reports. See sentry_options_t for the arithmetic. */
+    options->max_messages_per_minute = 10;
+    options->message_repeat_window_ms = 10000;
 #ifdef SENTRY_BUILD_ID_HEX
     /* Injected by scripts/release.sh, which passes the same value to the objcopy that
      * stamps the ELF — so the firmware's claim and the uploaded file always agree. */
@@ -116,6 +124,8 @@ bool sentry_init(const sentry_options_t *options)
     }
 
     sentry_device_info_get(&g_state.device);
+    sentry_throttle_init(
+        &g_state.throttle, options->max_messages_per_minute, options->message_repeat_window_ms);
     g_state.enabled = true;
 
     debug_log("initialised %s, ingest %s", SENTRY_MICRO_SDK_USER_AGENT, g_state.envelope_url);
@@ -222,6 +232,49 @@ sentry_response_t sentry_send_envelope(const uint8_t *envelope, size_t len)
     }
     return response;
 }
+
+sentry_response_t sentry_capture_message(sentry_level_t level, const char *message)
+{
+    if (!g_state.enabled) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+
+    /* Before anything is built, not after: the point of the throttle is to make a flood
+     * cheap, and formatting an event we are about to discard is most of the cost. */
+    if (!sentry_throttle_allow(&g_state.throttle, level, message, sentry_device_uptime_ms())) {
+        debug_log("throttled: \"%s\" (%u suppressed so far)", message ? message : "",
+            (unsigned)sentry_throttle_suppressed(&g_state.throttle));
+        return sentry_response_make(SENTRY_SEND_RATE_LIMITED);
+    }
+
+    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
+    sentry_event_t event;
+    if (!sentry_event_prepare(&event, event_id)) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+    event.level = level;
+    event.message = message;
+    debug_log(
+        "capturing %s as %s: \"%s\"", event_id, sentry_level_name(level), message ? message : "");
+
+    /* Stack, matching sentry_flush(). The no-allocation rule is not about this call being
+     * on the crash path — it is that a device with a fragmented heap must still be able to
+     * report why. */
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t needed = sentry_envelope_write(envelope, sizeof(envelope), &event);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        /* REJECTED rather than ERROR so the caller does not retry and the core does not
+         * buffer: the same message would not fit next time either. Raise
+         * SENTRY_MICRO_ENVELOPE_BUFFER_BYTES if this is your message rather than a bug. */
+        debug_log("message needs %u bytes, envelope buffer is %u", (unsigned)needed,
+            (unsigned)sizeof(envelope));
+        return sentry_response_make(SENTRY_SEND_REJECTED);
+    }
+
+    return sentry_send_envelope((const uint8_t *)envelope, needed);
+}
+
+uint32_t sentry_suppressed_count(void) { return sentry_throttle_suppressed(&g_state.throttle); }
 
 bool sentry_enable_buffering(const sentry_storage_t *storage)
 {

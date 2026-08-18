@@ -36,6 +36,7 @@
 #include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
+#include "core/sentry_throttle.h"
 #include "core/sentry_transport.h"
 #include "device/sentry_coredump_device.h"
 #include "device/sentry_device.h"
@@ -110,6 +111,30 @@ typedef struct {
 
     /** Firmware image name, shown as the module beside each frame. Defaults to the env. */
     const char *image_name;
+
+    /**
+     * Ceiling on `sentry_capture_message()` calls that become events, per minute.
+     * 0 removes the limit.
+     *
+     * This exists because the API is easy to call from a loop and a loop runs forever. At
+     * the default of 10 a single device can bill 14,400 events a day; a fleet of a hundred
+     * misbehaving ones can exhaust a quota before anybody notices, and the events that get
+     * dropped once you are over quota are the crash reports. Lower it for a large fleet.
+     *
+     * Never applies to crash reports, which are sent by a different path — a throttle that
+     * could eat the panic you rebooted from would be worse than no throttle.
+     */
+    uint16_t max_messages_per_minute;
+
+    /**
+     * How long an identical message stays suppressed, in milliseconds. 0 disables it.
+     *
+     * The common failure is not many different messages, it is one message from a loop: a
+     * sensor read that starts failing at 50 Hz. Within this window that becomes one event
+     * rather than thousands, and — unlike the per-minute ceiling — it does not crowd out
+     * whatever *else* the firmware has to say.
+     */
+    uint32_t message_repeat_window_ms;
 
     /** When true, the SDK narrates what it is doing through the logger. Off in production. */
     bool debug;
@@ -204,6 +229,34 @@ const sentry_transport_t *sentry_get_transport(void);
  * Returns false when the SDK is disabled or no entropy is available for the id.
  */
 bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
+
+/**
+ * Report a message — the ordinary, non-crash way to tell Sentry something happened.
+ *
+ *     sentry_capture_message(SENTRY_LEVEL_WARNING, "OTA aborted: bad signature");
+ *
+ * Builds the event, writes the envelope, and sends it, buffering for a later retry if
+ * there is no route right now — the same path everything else takes. `message` is used
+ * during the call and never retained, so a stack buffer is fine.
+ *
+ * Uses `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` of the calling stack, like `sentry_flush()`.
+ * Sends inline, so on a slow link this blocks for as long as the transport takes: fine at
+ * boot, worth thinking about from a render loop (see README).
+ *
+ * Subject to the throttle configured by `max_messages_per_minute` and
+ * `message_repeat_window_ms`, which is why this returns `SENTRY_SEND_RATE_LIMITED`
+ * without contacting anyone more often than you might expect. `sentry_suppressed_count()`
+ * says how often.
+ */
+sentry_response_t sentry_capture_message(sentry_level_t level, const char *message);
+
+/**
+ * Captured messages dropped by the local throttle since `sentry_init()`.
+ *
+ * Distinct from `sentry_dropped_count()`, which counts envelopes evicted from a full
+ * buffer. These never became envelopes at all.
+ */
+uint32_t sentry_suppressed_count(void);
 
 /**
  * Deliver a fully-built envelope through the registered transport.

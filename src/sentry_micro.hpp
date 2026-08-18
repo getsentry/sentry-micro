@@ -51,6 +51,23 @@ inline const char *org_id() { return sentry_get_org_id(); }
 inline const sentry_device_info_t &device_info() { return *sentry_get_device_info(); }
 inline const sentry_options_t &options() { return *sentry_get_options(); }
 
+/**
+ * Report a message.
+ *
+ *     sentry::capture_message(SENTRY_LEVEL_WARNING, "OTA aborted: bad signature");
+ *
+ * Argument order mirrors the C call exactly rather than putting the text first with a
+ * defaulted level, because two spellings of the same call in one codebase is worse than
+ * one extra word. Subject to the throttle; see `sentry_capture_message()`.
+ */
+inline sentry_response_t capture_message(sentry_level_t level, const char *message)
+{
+    return sentry_capture_message(level, message);
+}
+
+/** Captured messages dropped by the local throttle since init. */
+inline uint32_t suppressed_count() { return sentry_suppressed_count(); }
+
 /** Register a transport. Must outlive the SDK — a file-scope object, not a stack local. */
 inline void set_transport(const Transport &transport)
 {

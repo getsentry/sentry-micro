@@ -103,3 +103,19 @@
   which is worse than no symbolication because nothing about the result looks wrong.
 - `release.sh` gained `--no-wait`, `--no-sources` and `--json-summary`, and accepts an
   absolute `--project-dir` so it can run against a project in another repository.
+- `sentry_capture_message(level, message)` and `sentry::capture_message(...)`: report a
+  non-crash event in one call instead of hand-assembling one. It prepares the event, frames
+  the envelope on the caller's stack, sends it, and buffers it for retry if there is no
+  route — the same path everything else takes. `examples/wifi_basic` now uses it for the
+  boot report, which took fifteen lines before.
+- A client-side throttle on captured messages, because the API is easy to call from a loop
+  and a loop runs forever: the same message at the same level is sent at most once per
+  `message_repeat_window_ms` (default 10s), and everything else is capped at
+  `max_messages_per_minute` (default 10). Repeats are checked first so a stuck message
+  cannot spend the budget a different one needed, and the window runs from the last message
+  *sent*, so a caller faster than the window still reports once per window instead of going
+  quiet. Crash reports bypass it entirely. `sentry_suppressed_count()` reports what it ate;
+  `-D SENTRY_DEMO_FLOOD=1` demonstrates it on a board.
+- The "built but never exercised on hardware" list in README.md was stale: it still claimed
+  `WiFiTransport` had never delivered an event and that the buffer's power-cycle path was
+  host-tested only. Both were confirmed on hardware, and ONBOARDING.md already said so.
