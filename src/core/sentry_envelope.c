@@ -281,10 +281,19 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
             sentry_json_kv_string(writer, "image_addr", image_addr);
             sentry_json_kv_string_opt(writer, "code_file", event->image_name);
             if (event->image_size > 0) {
-                char image_size[24];
-                snprintf(image_size, sizeof(image_size), "0x%llx",
-                    (unsigned long long)event->image_size);
-                sentry_json_kv_string(writer, "image_size", image_size);
+                /*
+                 * A plain number, unlike image_addr right above it. The two fields sit next
+                 * to each other and look interchangeable, but Relay types them differently:
+                 * image_addr is an Addr and accepts "0x...", image_size is a plain unsigned
+                 * integer and a hex string is rejected outright.
+                 *
+                 * Sending "0xd759e3" here cost us every image_size we ever reported. The
+                 * event still arrives, the issue still renders, and the only trace is an
+                 * "Event Processing Errors" panel on the event page saying
+                 * `Discarded invalid value ... expected an unsigned integer`. Nothing on
+                 * the device sees it, because ingest still answers 200.
+                 */
+                sentry_json_kv_uint(writer, "image_size", event->image_size);
             }
             sentry_json_object_end(writer);
             sentry_json_array_end(writer);

@@ -78,3 +78,8 @@
 - `-D SENTRY_CRASH_BUTTON_PIN=<gpio>` crashes the example on a button press, so the
   crash -> reboot -> report -> symbolicate loop is repeatable without a one-minute reflash
   each time. `-D SENTRY_DEMO_SCAN=1` runs the network scan on every boot.
+- `image_size` is emitted as a JSON number rather than a hex string. Relay types it as a
+  plain unsigned integer — unlike `image_addr` right beside it, which is an address and does
+  take `"0x..."` — so every event we ever sent had the field discarded with
+  `expected an unsigned integer`. Ingest still answered 200 and the issue still rendered;
+  the only trace was an "Event Processing Errors" panel on the event page.

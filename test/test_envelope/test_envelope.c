@@ -433,6 +433,32 @@ static void test_event_carries_debug_meta_when_a_build_id_is_known(void)
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"image_addr\":\"0x0\""));
 }
 
+/**
+ * image_size is a number even though image_addr, right beside it, is a string.
+ *
+ * Relay types the two fields differently: image_addr is an Addr and takes "0x...", while
+ * image_size is a plain unsigned integer and rejects a hex string. We shipped
+ * `"image_size":"0xd759e3"` and Relay discarded the field on every event — visible only as
+ * an "Event Processing Errors" note on the event page, because ingest still answers 200
+ * and the issue still renders. Asserting the exact bytes is the only way this stays fixed.
+ */
+static void test_image_size_is_a_number_not_a_hex_string(void)
+{
+    sentry_device_info_t device = sample_device();
+    sentry_event_t event = sample_event(&device);
+    event.build_id = "4978b44454c7d2c87b9a58d5bfed23f3e1d4e831";
+    event.image_addr = 0x3f400020;
+    event.image_size = 0xd759e3;
+
+    char buf[2048];
+    TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"image_size\":14113251"));
+    /* Belt and braces: no quoted form anywhere, in either notation. */
+    TEST_ASSERT_NULL(strstr(buf, "\"image_size\":\""));
+    /* And the neighbouring address is still a string, which is the confusing part. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"image_addr\":\"0x3f400020\""));
+}
+
 static void test_event_omits_debug_meta_without_a_build_id(void)
 {
     sentry_device_info_t device = sample_device();
@@ -570,6 +596,7 @@ int main(void)
     RUN_TEST(test_pads_a_short_build_id);
     RUN_TEST(test_rejects_a_malformed_build_id);
     RUN_TEST(test_event_carries_debug_meta_when_a_build_id_is_known);
+    RUN_TEST(test_image_size_is_a_number_not_a_hex_string);
     RUN_TEST(test_event_omits_debug_meta_without_a_build_id);
     RUN_TEST(test_event_contains_the_fields_ingest_needs);
     RUN_TEST(test_event_omits_the_timestamp_when_the_clock_is_unset);
