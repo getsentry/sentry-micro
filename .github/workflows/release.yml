@@ -1,0 +1,78 @@
+# Ship a build and make its crashes readable.
+#
+# This workflow is the reference for adopting the actions in .github/actions/ — copy it
+# into your own firmware repository and change `project-dir`. It exists here because a
+# release path that is never run is a release path that does not work, and because
+# sentry-micro's own examples are exactly the build matrix the actions are designed for.
+#
+# Requires one secret: SENTRY_AUTH_TOKEN, an organization auth token with scope `org:ci`
+# (Sentry -> Settings -> Auth Tokens). That kind of token embeds its own organization,
+# which is why no `org` is passed below.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release identifier, e.g. wifi_basic@1.2.3
+        required: false
+        type: string
+
+jobs:
+  # Read the variants out of platformio.ini rather than listing them here. A board added
+  # to that file joins the release automatically; a hand-written list is how a variant
+  # ends up shipping with no debug files and nobody noticing.
+  plan:
+    name: Find build variants
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.list.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/list-environments
+        id: list
+        with:
+          project-dir: examples/wifi_basic
+
+  upload:
+    name: Debug files (${{ matrix.environment }})
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      # Every variant reports its own outcome. One failing board should not hide the
+      # status of the other four.
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.plan.outputs.environments) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # release.sh names the release after `git describe`, which needs the tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ matrix.environment }}-${{ hashFiles('examples/wifi_basic/platformio.ini') }}
+          restore-keys: pio-${{ matrix.environment }}-
+
+      - uses: ./.github/actions/upload-debug-files
+        with:
+          project-dir: examples/wifi_basic
+          environments: ${{ matrix.environment }}
+          # Coverage is guaranteed by the matrix, which came from platformio.ini.
+          require-complete: false
+          release: ${{ inputs.release }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_MICRO_DSN: ${{ secrets.SENTRY_MICRO_DSN }}

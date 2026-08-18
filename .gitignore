@@ -21,3 +21,6 @@ scratchpad/
 
 # sentry-cli credentials, if one ever lands in the working tree
 .sentryclirc
+
+# Python bytecode from the release scripts (test/test_release imports one of them).
+__pycache__/

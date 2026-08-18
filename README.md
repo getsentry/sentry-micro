@@ -102,6 +102,7 @@ test/                       host unit tests (Unity), run with `pio test`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
+.github/actions/            the same chain as a reusable GitHub Action
 partitions/                 reference partition tables (with a `coredump` partition)
 platformio.ini              host test project (firmware builds live in the examples)
 ```
@@ -383,13 +384,80 @@ resolves an address by computing `instruction_addr - image_addr` and looking the
 against symbols normalised by the object's own load address — so `image_addr` must equal the
 ELF's lowest `PT_LOAD` address (`0x3f400020` on ESP32, *not* 0), and `image_size` is what
 decides which module a frame belongs to. Get either wrong and every frame renders as
-`<unknown>`: the event arrives, the addresses look right, and nothing says why. That is why
-`release.sh` builds twice — the values only exist once the ELF is linked, so the first pass
-measures and the second bakes them in, then re-measures and refuses to ship a mismatch.
+`<unknown>`: the event arrives, the addresses look right, and nothing says why.
+
+That is why `release.sh` builds in a loop rather than once. The values only exist after the
+link, so the first pass measures and the next bakes them in — but baking them in *moves*
+them. On Xtensa a small constant is a two-byte `movi.n` and a large one becomes a four-byte
+literal-pool entry, so compiling in a real size grew this image by `0x1c` bytes, and the
+size in the firmware then described the previous build. It re-measures and re-bakes until a
+pass produces an ELF matching the numbers it was built with — usually three passes — and
+refuses to ship if it never settles.
 
 Each build variant gets its own id, derived from `release + env`. That is required, not
 cosmetic: every board in a matrix is a distinct binary, and resolving addresses against the
 wrong one produces confidently wrong function names.
+
+### In CI: one step instead of a copied script
+
+`release.sh` does the whole chain, but telling an adopter to copy a bash file is not an
+integration. The same chain is packaged as a composite action:
+
+```yaml
+- uses: getsentry/sentry-micro/.github/actions/upload-debug-files@main
+  with:
+    project-dir: firmware
+  env:
+    SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    SENTRY_MICRO_DSN: ${{ secrets.SENTRY_MICRO_DSN }}
+```
+
+That builds **every** `[env:...]` in `firmware/platformio.ini`, stamps each one, uploads its
+debug files, and fails the job if any step did not do what it claimed.
+
+The default matters more than the convenience. Symbolication is per-binary, so every board
+and feature variant needs its own upload — WLED ships dozens — and a variant nobody uploaded
+is invisible: its firmware works, its events arrive, and only its users get raw hex. So the
+list of variants is read out of `platformio.ini` rather than written into the workflow.
+Adding a board to that file adds it to the release; leaving one out fails the build until
+somebody says, in `skip-environments`, that its users are meant to go without.
+
+For a matrix job per variant, generate the matrix from the same source:
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.list.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: getsentry/sentry-micro/.github/actions/list-environments@main
+        id: list
+        with: { project-dir: firmware }
+
+  upload:
+    needs: plan
+    strategy:
+      matrix:
+        environment: ${{ fromJSON(needs.plan.outputs.environments) }}
+    ...
+```
+
+`.github/workflows/release.yml` in this repository is that workflow, running against the
+`wifi_basic` example — copy it and change `project-dir`.
+
+Three checks in there exist because the corresponding mistake is otherwise silent:
+
+| Check | What it catches |
+| --- | --- |
+| `sentry-cli debug-files check` on the stamped ELF | `objcopy` exits 0 whether or not the note landed. An unstamped ELF uploads happily and resolves nothing. |
+| `--id <debug_id> --require-all` on upload | "matched 0 files" is a successful exit code otherwise. |
+| `--wait` | Without it the upload returns when the bytes are accepted, not when the server accepts the *file*. |
+
+Plus one the scripts do themselves: two variants that somehow derive the same `debug_id`
+fail the release, because Sentry would resolve one binary's addresses against the other and
+print function names that look entirely plausible.
 
 ## Writing a transport
 

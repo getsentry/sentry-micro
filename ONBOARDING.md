@@ -66,6 +66,17 @@ PLATFORMIO_BUILD_FLAGS='-D SENTRY_DEMO_CRASH=1' scripts/release.sh -e esp32dev -
 The board crashes once per power-on, reboots, reports the crash on the next boot, and erases
 the core dump once it is delivered.
 
+In CI, the same chain is one step — and it covers every variant in `platformio.ini`, which
+is the part that is easy to get wrong by hand:
+
+```yaml
+- uses: getsentry/sentry-micro/.github/actions/upload-debug-files@main
+  with: { project-dir: examples/wifi_basic }
+  env: { SENTRY_AUTH_TOKEN: "${{ secrets.SENTRY_AUTH_TOKEN }}" }
+```
+
+`.github/workflows/release.yml` is the full version, sharded one job per variant.
+
 
 ## Traps
 
@@ -143,6 +154,11 @@ Written and tested, never actually run on hardware — check before trusting:
   only. All five variants build; only `esp32dev` has been flashed.
 - **TLS certificate verification.** `WiFiTransport` runs with verification off unless you call
   `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
+- **The Action's upload path.** CI exercises it on every PR in build-only mode — fixpoint
+  build, stamp, and the `sentry-cli` readback that proves the stamp landed — but no run has
+  yet uploaded to Sentry from CI, because the repository has no `SENTRY_AUTH_TOKEN` secret.
+  The upload command itself is the one `release.sh` has always used from a laptop, plus
+  `--wait --id --require-all`. Add the secret and push a tag to close the gap.
 
 Verified on hardware (ESP32-PICO-D4 on an M5Stack, over WiFi):
 
