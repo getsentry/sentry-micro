@@ -421,3 +421,12 @@ echo "done. Events from this build carry:"
 echo "  release  ${RELEASE}"
 echo "  code_id  ${BUILD_ID}"
 echo "  debug_id ${DEBUG_ID}"
+
+# The two settings Sentry cannot infer for a native project, printed from the ELF that was
+# just built — which is the only place the build prefix is knowable, and in CI the only run
+# where it is the *right* prefix. Non-fatal: this is advice, not part of the release.
+if [ "$DO_UPLOAD" -eq 1 ]; then
+    echo
+    python3 "${REPO_ROOT}/scripts/sentry_config.py" "$ELF" --project-dir "$PROJECT_PATH" \
+        || echo "  (could not derive the Sentry settings from this ELF)"
+fi

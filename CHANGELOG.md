@@ -199,3 +199,17 @@
   name says something the type does not, and unlike the PC it is stable across builds, so it
   cannot split one issue per firmware in the no-frames grouping fallback. Caught on a real
   event by the ChromaBay integration.
+- `scripts/sentry_config.py` derives the two Sentry project settings a native project needs
+  and cannot get automatically — the code mapping and the stack trace rules — by reading the
+  build paths back out of the ELF that was just built. `release.sh` prints them at the end of
+  every upload, which is the only place the build prefix is knowable and, in CI, the only run
+  where it is the right one. The rules invert the usual approach: the example firmware is
+  built from 21 distinct directories and one is ours, so nothing is in-app until proven
+  otherwise rather than trying to enumerate toolchains. Without that, suspect commits blames
+  the first in-app frame and lands in `newlib`.
+- `scripts/doctor.py` checks a release against the project it was uploaded to: debug files
+  indexed under the id the firmware reports, the release existing, finalized and carrying
+  commits, a code mapping whose stack root actually prefixes this ELF's build paths, and
+  stack trace rules that keep toolchain frames out of your code. Checks the mapping against
+  real paths rather than for existence, because one that is a directory off looks configured
+  and matches nothing — and distinguishes a missing setting from a token that cannot see it.

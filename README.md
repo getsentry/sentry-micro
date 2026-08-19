@@ -497,16 +497,71 @@ size in the firmware then described the previous build. It re-measures and re-ba
 pass produces an ELF matching the numbers it was built with — usually three passes — and
 refuses to ship if it never settles.
 
-### Suspect commits: one code mapping
+### Suspect commits: two settings, derived for you
 
-Associating commits puts the commit list on the release. For Sentry to point at the
-*likely* commit, the file paths in a stack frame have to line up with paths in the
-repository — and the compiler records the build machine's absolute paths, e.g.
-`/home/runner/work/chromabay/chromabay/firmware/src/main.cpp`.
+Symbolication works out of the box. Getting Sentry to point at the *likely* commit needs two
+project settings that it cannot infer for a native project — automatic code mappings cover
+JavaScript, Python, Java, PHP, Ruby, Go, C# and Kotlin, and nothing else.
 
-Add a code mapping in Sentry (Settings → Integrations → your repo) from that prefix to the
-repository root. A CI path is stable for a given repository, so one mapping covers every
-release built there. This is a Sentry settings change, not a build change.
+`release.sh` prints both at the end of every upload, read out of the ELF it just built:
+
+```
+Code mapping   (Settings -> Integrations -> your repo -> Code Mappings)
+  Stack trace root : /home/runner/work/chromabay/chromabay/
+  Source code root : (leave empty — the repository root)
+
+Stack trace rules   (Settings -> Projects -> your project -> Processing)
+  family:native -app
+  stack.abs_path:/home/runner/work/chromabay/chromabay/** +app
+  stack.abs_path:**/.pio/libdeps/** -app
+```
+
+**The code mapping** exists because the compiler records the build machine's absolute paths,
+and nothing lines up with the repository until that prefix is stripped. Only the build knows
+it, which is why this is printed from the ELF rather than guessed — and why the run that
+matters is the one in CI.
+
+**The stack trace rules** exist because suspect commits blames the first *in-app* frame. The
+example firmware is built from 21 distinct directories and exactly one is ours; the rest are
+Espressif's CI, a GitLab runner and two strangers' home directories, baked into prebuilt
+libraries. Enumerating those is hopeless, so the rules invert it: nothing is in-app until
+proven otherwise, then your repository is added back. Without them a `newlib` frame counts
+as your code and Sentry blames a file you do not have.
+
+Run it against any ELF directly:
+
+```bash
+scripts/sentry_config.py firmware.elf --project-dir examples/wifi_basic
+```
+
+### Checking it actually works
+
+Every step of this chain reports success whether or not it worked, and the failures land far
+from the mistake — debug files that match nothing, a code mapping one directory off, a
+"suspect commit" section that is simply absent. `doctor.py` asks the questions out loud,
+before something crashes:
+
+```bash
+export SENTRY_AUTH_TOKEN='...'          # needs project:read and org:read
+scripts/doctor.py --elf firmware.elf --org my-org --project my-project \
+    --release 'my-firmware@1.2.3'
+```
+
+```
+[  ok  ] debug files uploaded for 0760011f-9f6c-a142-57f0-a8f0dcc68e02
+[  ok  ] release my-firmware@1.2.3 exists
+[  ok  ] release is finalized
+[  ok  ] release carries 14 commit(s)
+[ FAIL ] no code mappings
+         Sentry does not create these automatically for native projects.
+         Run scripts/sentry_config.py for the values.
+```
+
+It checks the code mapping against the ELF's *actual* build paths rather than for mere
+existence, since a mapping that is one directory off looks configured and matches nothing.
+Read-only, and it distinguishes "this setting is missing" from "this token cannot see it" —
+the upload-only token a release uses cannot read project settings, and reporting that as a
+missing setting would send you to fix something that is already right.
 
 Each build variant gets its own id, derived from `release + env`. That is required, not
 cosmetic: every board in a matrix is a distinct binary, and resolving addresses against the
