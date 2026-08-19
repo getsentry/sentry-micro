@@ -35,6 +35,11 @@ WAIT_FOR_PROCESSING=1
 INCLUDE_SOURCES=1
 SET_COMMITS=1
 JSON_SUMMARY=""
+SECRETS_FILE="${SENTRY_MICRO_SECRETS:-$HOME/.config/sentry-micro/env}"
+# Distinguishes "tried the default path, found nothing, that is fine" from "you asked for
+# this exact file and it is not there" — only the second one is an error.
+SECRETS_EXPLICIT=0
+[ -n "${SENTRY_MICRO_SECRETS:-}" ] && SECRETS_EXPLICIT=1
 
 usage() {
     sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
@@ -45,8 +50,13 @@ Options:
   -r, --release NAME     release identifier, e.g. my-firmware@1.2.3
                          (default: <env>@<git-describe or 'dev'>)
   -d, --project-dir DIR  PlatformIO project (default: examples/wifi_basic)
+      --secrets PATH     shell-export file to source before building — DSN, WiFi
+                         credentials, auth token (default: $SENTRY_MICRO_SECRETS or
+                         ~/.config/sentry-micro/env, tried but not required)
       --no-upload        build and stamp, but do not talk to Sentry
-      --upload-firmware  also flash the result to a connected board
+      --upload-firmware  also flash the result to a connected board — port selection is
+                         left entirely to PlatformIO (set PLATFORMIO_UPLOAD_PORT, or
+                         upload_port in platformio.ini, if it cannot find one on its own)
       --no-wait          return as soon as the upload is accepted, without waiting
                          for Sentry to finish processing it
       --no-sources       upload debug info only, without embedding the source text
@@ -61,6 +71,7 @@ while [ $# -gt 0 ]; do
         -e|--env) ENVIRONMENT="$2"; shift 2 ;;
         -r|--release) RELEASE="$2"; shift 2 ;;
         -d|--project-dir) PROJECT_DIR="$2"; shift 2 ;;
+        --secrets) SECRETS_FILE="$2"; SECRETS_EXPLICIT=1; shift 2 ;;
         --no-upload) DO_UPLOAD=0; shift ;;
         --upload-firmware) UPLOAD_FIRMWARE=1; shift ;;
         --no-wait) WAIT_FOR_PROCESSING=0; shift ;;
@@ -83,6 +94,64 @@ case "$PROJECT_DIR" in
 esac
 if [ ! -f "${PROJECT_PATH}/platformio.ini" ]; then
     echo "error: no platformio.ini in ${PROJECT_PATH}" >&2
+    exit 1
+fi
+
+# ── secrets ─────────────────────────────────────────────────────────────────────────────
+#
+# Sourced here, before anything else, so every step below — the build, the upload, the
+# flash — sees the exact same values. Doing this in a separate command from the one that
+# builds is the trap: exported variables do not survive into a later shell invocation, so
+# a build run without them silently falls back to the placeholder DSN and WiFi credentials
+# in main.cpp — with a clean exit code, no error, and a firmware that never reports
+# anything real. That is not hypothetical; it is what happened building this check.
+#
+# The default path is tried but not required — CI has no such file and injects secrets as
+# already-exported variables instead, which this does not disturb. Asking for one
+# explicitly (--secrets, or $SENTRY_MICRO_SECRETS) and not finding it is a real error.
+if [ -f "$SECRETS_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$SECRETS_FILE"
+    echo "  secrets   sourced from $SECRETS_FILE"
+elif [ "$SECRETS_EXPLICIT" -eq 1 ]; then
+    echo "error: no secrets file at $SECRETS_FILE" >&2
+    exit 1
+fi
+
+# DSN is required unconditionally, even with --no-upload: a build without a real one is a
+# firmware that compiles, flashes, and never reports anything, which is a worse failure
+# than refusing to build. Never echoed — only whether it is set, matching the SENSITIVE
+# convention in env_secrets.py, which reads this same variable.
+if [ -z "${SENTRY_MICRO_DSN:-}" ]; then
+    cat >&2 <<EOF
+error: SENTRY_MICRO_DSN is not set.
+
+Export it yourself, or point --secrets / \$SENTRY_MICRO_SECRETS at a file — outside the
+repo, never committed — containing shell exports:
+
+  export SENTRY_MICRO_DSN='https://<key>@o<org>.ingest.<region>.sentry.io/<project>'
+  export SENTRY_MICRO_WIFI_SSID='...'
+  export SENTRY_MICRO_WIFI_PASSWORD='...'
+  export SENTRY_AUTH_TOKEN='...'          # or skip this and run 'sentry-cli login' instead
+EOF
+    exit 1
+fi
+# WiFi credentials are not required in the same way: a firmware with no WiFi configured is
+# a legitimate choice (serial-relay-only testing), not a mistake, so this warns rather than
+# blocks. A DSN with no way to reach it at all is not a decision anyone makes on purpose.
+if [ -z "${SENTRY_MICRO_WIFI_SSID:-}" ] || [ -z "${SENTRY_MICRO_WIFI_PASSWORD:-}" ]; then
+    echo "warning: SENTRY_MICRO_WIFI_SSID/PASSWORD not set — firmware falls back to the" >&2
+    echo "         placeholder credentials in main.cpp and the serial relay transport." >&2
+fi
+if [ "$DO_UPLOAD" -eq 1 ] && ! command -v sentry-cli >/dev/null 2>&1; then
+    echo "error: sentry-cli not found — install it, or pass --no-upload." >&2
+    echo "       brew install getsentry/tools/sentry-cli" >&2
+    exit 1
+fi
+if [ "$DO_UPLOAD" -eq 1 ] && [ -z "${SENTRY_AUTH_TOKEN:-}" ] && [ ! -f "$HOME/.sentryclirc" ]; then
+    echo "error: no Sentry credentials." >&2
+    echo "       export SENTRY_AUTH_TOKEN=... (Settings -> Auth Tokens)," >&2
+    echo "       or run 'sentry-cli login', or pass --no-upload." >&2
     exit 1
 fi
 
@@ -213,20 +282,6 @@ CHECK_ARGS=""
 python3 "${REPO_ROOT}/scripts/check_debug_file.py" "$ELF" --expect-debug-id "$DEBUG_ID" $CHECK_ARGS
 
 if [ "$DO_UPLOAD" -eq 1 ]; then
-    if ! command -v sentry-cli >/dev/null 2>&1; then
-        echo
-        echo "error: sentry-cli not found — install it, or pass --no-upload." >&2
-        echo "       brew install getsentry/tools/sentry-cli" >&2
-        exit 1
-    fi
-    if [ -z "${SENTRY_AUTH_TOKEN:-}" ] && [ ! -f "$HOME/.sentryclirc" ]; then
-        echo
-        echo "error: no Sentry credentials." >&2
-        echo "       export SENTRY_AUTH_TOKEN=... (Settings -> Auth Tokens)," >&2
-        echo "       or run 'sentry-cli login', or pass --no-upload." >&2
-        exit 1
-    fi
-
     # Derive the project from the DSN rather than making the user configure it twice; the
     # DSN already carries it, and sentry-cli accepts numeric ids as well as slugs.
     #
@@ -317,6 +372,9 @@ fi
 if [ "$UPLOAD_FIRMWARE" -eq 1 ]; then
     echo
     echo "→ flashing"
+    # Port selection is PlatformIO's job, not this script's: it already does this
+    # correctly and cross-platform. If it cannot find your board on its own, set
+    # PLATFORMIO_UPLOAD_PORT yourself, or upload_port in platformio.ini.
     ( cd "$PROJECT_PATH" && pio run -e "$ENVIRONMENT" -t upload )
 fi
 
