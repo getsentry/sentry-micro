@@ -161,7 +161,7 @@ Arduino / C++:
 void setup() {
     sentry::Options options;
     options.dsn = "https://<key>@<org>.ingest.sentry.io/<project>";
-    options.release = "my-firmware@1.0.0";   // must match your uploaded debug files
+    options.release = "my-firmware@1.0.0";   // groups events; symbolication uses debug_id
     sentry::init(options);                   // call this first — it reads the *previous* boot
 }
 ```
@@ -414,7 +414,13 @@ against a plain array.
 ## Symbolication: making backtraces readable
 
 Sentry never sees your code. It matches an event to an uploaded ELF by `debug_id`, derived
-from the firmware's GNU build-id. One command does the whole chain:
+from the firmware's GNU build-id — **not** by release. `sentry-cli debug-files upload` takes
+no release argument, so a release can be renamed, or left unset entirely, without breaking a
+single stack trace. (JavaScript source maps *are* release-scoped, which is where the
+assumption usually comes from.) The release matters for grouping, release health and suspect
+commits; symbolication is independent of it.
+
+One command does the whole chain:
 
 ```bash
 scripts/release.sh -e esp32dev -r 'my-firmware@1.2.3'

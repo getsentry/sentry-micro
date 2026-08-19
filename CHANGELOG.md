@@ -181,3 +181,10 @@
 - The persisted trace slot is cleared at `sentry_init()` once recovered, so a later panic on
   a boot where nothing was ever adopted no longer resurrects the previous crash's trace and
   claims the two are the same incident.
+- Corrected a false claim in the SDK's own documentation: `Options::release` did **not** have
+  to match what `sentry-cli` uploaded debug files under, contrary to what `sentry_micro.h`
+  asserted in bold, and what `sentry_envelope.h` and README.md repeated. Symbolication
+  matches `debug_id` derived from the GNU build-id; `sentry-cli debug-files upload` takes no
+  release argument at all. JavaScript source maps *are* release-scoped, which is where the
+  assumption comes from. Reported by the first external integrator, who had architected
+  around the constraint because the header stated it as the field's contract.

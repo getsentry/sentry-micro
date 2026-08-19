@@ -76,7 +76,7 @@ typedef struct {
     /** Human-readable summary, e.g. "Device rebooted: brownout". Optional. */
     const char *message;
 
-    /** From `sentry_options_t`. Release must match the uploaded debug files. */
+    /** From `sentry_options_t`. Metadata: symbolication matches on `debug_id`, not this. */
     const char *release;
     const char *environment;
     /** Free-form hardware identifier, attached as a tag. Optional. */

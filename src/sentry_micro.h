@@ -69,8 +69,17 @@ typedef struct {
 
     /**
      * Release identifier, conventionally `package@version` — e.g. `"chromabay@1.4.2"`.
-     * This is what ties an event to the uploaded debug files, so **symbolication does not
-     * work without it matching what `sentry-cli` uploaded**.
+     *
+     * Metadata, not a symbolication key. It groups events, drives release health, and is
+     * what suspect commits hang off — but a backtrace resolves whether or not it is set,
+     * and whatever it is set to. Symbolication matches `debug_id`, derived from the GNU
+     * build-id, against the uploaded ELF; `sentry-cli debug-files upload` takes no release
+     * argument at all.
+     *
+     * Said explicitly because the opposite is easy to assume, and this header asserted it
+     * for a while: JavaScript source maps *are* release-scoped, so the rule carries over
+     * from web SDKs where it does not hold. Releases here can be renamed without breaking
+     * a single stack trace.
      */
     const char *release;
 
