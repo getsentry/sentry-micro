@@ -36,10 +36,16 @@ version control, rather than being copied into WLED's own `usermods/` folder.
 
 1. Clone WLED locally.
 
-2. Copy `platformio_override.ini` from this directory into the root of that WLED
-   checkout, and edit the absolute paths (`symlink://...`) to point at wherever this
-   repo lives on your machine. Leave the `platform =` and `-UWLED_ENABLE_DMX_INPUT`
-   lines alone — see "Platform override" below before touching either.
+2. Export `SENTRY_MICRO_REPO` to wherever this repo lives on your machine, and copy
+   `platformio_override.ini` from this directory into the root of that WLED checkout:
+
+   ```
+   export SENTRY_MICRO_REPO=/path/to/sentry-micro
+   cp platformio_override.ini /path/to/your/WLED/checkout/
+   ```
+
+   Leave the `platform =` and `-UWLED_ENABLE_DMX_INPUT` lines alone — see "Platform
+   override" below before touching either.
 
 3. Run the forwarder (from this directory) with your project's real DSN:
 
@@ -55,16 +61,20 @@ version control, rather than being copied into WLED's own `usermods/` folder.
    ```
 
    Same public key and project id as your real DSN, host:port swapped for wherever the
-   forwarder is listening. Set that as `SENTRY_DSN` in `platformio_override.ini`'s
-   `build_flags`. See `usermod_sentry.cpp`'s header comment for why this works — the
-   ingest URL is built purely from the DSN, so nothing on the device needs to know the
+   forwarder is listening. See `usermod_sentry.cpp`'s header comment for why this works —
+   the ingest URL is built purely from the DSN, so nothing on the device needs to know the
    real ingest host or region.
 
-4. From the WLED checkout:
+4. Export that as `SENTRY_MICRO_DSN`, and build+flash from the WLED checkout:
 
    ```
+   export SENTRY_MICRO_DSN='http://abc123@192.168.1.42:8080/789'
    pio run -e sentry_poc -t upload -t monitor
    ```
+
+   This gets you a working device, but with no debug file uploaded — backtraces recover
+   and deliver, but frame addresses stay hex. For a build Sentry can symbolicate, use
+   `scripts/release.sh` instead of `pio` directly — see "Symbolication" below.
 
 ## Trying it
 
@@ -101,11 +111,29 @@ hence `-UWLED_ENABLE_DMX_INPUT` in the override. Nothing to do with coredump; a 
 of picking an older platform on purpose. If you need DMX input for your own testing,
 you'll need a different resolution to this same conflict.
 
+## Symbolication
+
+`scripts/release.sh` (see its own header) builds with a build-id compiled in, stamps the
+matching debug-id into the ELF, and uploads that ELF's debug info to Sentry — after that, a
+backtrace's raw addresses resolve server-side into functions, files, and line numbers. It
+works against this project the same way it works against `examples/wifi_basic`:
+
+```
+scripts/release.sh -e sentry_poc -d /path/to/your/WLED/checkout --upload-firmware
+```
+
+One thing specific to this example: `release.sh`'s `SENTRY_MICRO_DSN` does double duty
+everywhere else — it's both the on-device DSN and the value `sentry-cli` parses the target
+project out of. Here those can't be the same value: the device must never be given a DSN
+whose host is real Sentry (there's no TLS in this build to reach it), only the forwarder's
+own address. Export `SENTRY_MICRO_DSN` as the forwarder's printed "device SENTRY_DSN" (step
+3 above), not your real ingest DSN — its project id is the same as the real one (`sentry-cli`
+resolves the target project from the DSN's path, not its public key), while the firmware
+only ever learns the forwarder's address. If you keep a `--secrets` file for this project
+(see `release.sh --help`), put that device DSN in it rather than your real one.
+
 ## Known issues and limitations
 
-- **Symbolication**: this example captures a real backtrace (multiple correct frames,
-  exception type, task, reset reason) but does not upload a matching debug file, so
-  Sentry cannot yet resolve frame addresses to function names.
 - **Stale coredump partitions**: if you're switching between partition tables, boards, or
   platform pins on the same physical chip, do a full flash erase first. A `coredump`
   partition at a given flash offset in one layout can coincide with unrelated leftover

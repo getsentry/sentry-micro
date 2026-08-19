@@ -61,6 +61,17 @@
 #define SENTRY_UM_STRINGIFY_(x) #x
 #define SENTRY_UM_STRINGIFY(x) SENTRY_UM_STRINGIFY_(x)
 
+/*
+ * scripts/release.sh sets SENTRY_MICRO_RELEASE (-> this macro, via env_secrets.py) to
+ * whatever it registers with Sentry and stamped the matching debug file under — using
+ * anything else here would report events under a release Sentry never heard of. Falls
+ * back to WLED's own version for a plain `pio run` with no release.sh involved, same as
+ * before; that build still works, it just has no debug file to symbolicate against.
+ */
+#ifndef SENTRY_RELEASE
+#    define SENTRY_RELEASE "wled@" SENTRY_UM_STRINGIFY(VERSION)
+#endif
+
 namespace {
 
 /*
@@ -86,7 +97,7 @@ public:
     {
         sentry::Options options;
         options.dsn = SENTRY_DSN;
-        options.release = "wled@" SENTRY_UM_STRINGIFY(VERSION);
+        options.release = SENTRY_RELEASE;
         options.environment = "development";
         options.board = ARDUINO_BOARD;
         options.debug = SENTRY_MICRO_DEBUG;
