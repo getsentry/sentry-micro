@@ -33,18 +33,29 @@ extern "C" {
 /**
  * Child spans one transaction can hold.
  *
- * Sixteen is far more than an operation on a microcontroller needs, and the whole
- * transaction still has to fit in `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` — a span costs
- * roughly 150 bytes of JSON, so raise this and the buffer together or the envelope simply
- * will not fit.
+ * Four, because the transaction lives on the caller's stack and Arduino's loop task has
+ * 8 KB of it in total — which a TLS handshake already wants several KB of. Measured on
+ * ESP32:
+ *
+ *     spans   sizeof(sentry_transaction_t)   + 2 KB envelope buffer = peak stack
+ *       4                688 B                          2.7 KB
+ *       8              1,200 B                          3.2 KB
+ *      16              2,224 B                          4.2 KB
+ *
+ * Four covers "decode, validate, apply, ack", which is what a device operation actually
+ * is. Raising it is a decision with a number attached rather than a guess, and running
+ * out is reported (`dropped_spans`, and a `spans_dropped` tag) rather than hidden.
+ *
+ * The whole transaction also has to fit in `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` at about
+ * 150 bytes of JSON per span, so raise the two together or the envelope will not fit.
  */
 #ifndef SENTRY_MICRO_MAX_SPANS
-#    define SENTRY_MICRO_MAX_SPANS 16
+#    define SENTRY_MICRO_MAX_SPANS 4
 #endif
 
-/** Attributes a single span can carry. This is where SDK-1418's metrics will land. */
+/** Measurements a single span can carry — free heap, RSSI, frame time. */
 #ifndef SENTRY_MICRO_MAX_SPAN_ATTRS
-#    define SENTRY_MICRO_MAX_SPAN_ATTRS 8
+#    define SENTRY_MICRO_MAX_SPAN_ATTRS 4
 #endif
 
 typedef struct {

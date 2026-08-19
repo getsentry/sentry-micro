@@ -324,50 +324,65 @@ size_t sentry_trace_header(char *buf, size_t cap);
 /**
  * Begin a transaction for an operation the device is about to perform.
  *
- *     sentry_transaction_start("set-colour", "device.operation");
- *     sentry_span_t *s = sentry_span_begin("ble.decode", NULL);
+ *     sentry_transaction_t txn;
+ *     sentry_transaction_start(&txn, "set-colour", "device.operation");
+ *     sentry_span_t *decode = sentry_transaction_start_child(&txn, "ble.decode", NULL);
  *     ...
- *     sentry_span_end(s);
- *     sentry_transaction_end();
+ *     sentry_span_finish(decode);
+ *     sentry_transaction_finish(&txn);
  *
- * `name` groups it in Sentry and must outlive the transaction — a string literal, not a
- * stack buffer. Joins the trace already adopted from the caller, or starts one.
+ * The verbs match sentry-native — `_start` and `_finish`, with child spans started from
+ * their parent — so anyone who has used the desktop C SDK already knows the shape. What
+ * deliberately does *not* match is ownership: sentry-native hands back heap-managed
+ * `sentry_value_t` handles, and this SDK does not allocate.
  *
- * Returns false when the SDK is disabled, when a transaction is already running (they do
- * not nest), or when the active trace is explicitly *not* sampled — in which case nothing
- * is built at all rather than built and discarded.
+ * **You own `txn`** — a local in the function running the operation, like the
+ * `sentry_coredump_t` a crash report is read into. It is a few hundred bytes and costs
+ * nothing when no operation is running, which is most of the time. The SDK deliberately
+ * does not keep one: a device that never traces should not carry the storage.
+ *
+ * `name` groups the operation in Sentry and must outlive the transaction — a string
+ * literal, not a stack buffer. `op` is a coarse category (`"device.operation"`) and may be
+ * NULL. Joins the trace already adopted from the caller, or starts one.
+ *
+ * Returns false when the SDK is disabled, or when the active trace is explicitly *not*
+ * sampled — in which case nothing is built rather than built and thrown away.
  */
-bool sentry_transaction_start(const char *name, const char *op);
+bool sentry_transaction_start(sentry_transaction_t *txn, const char *name, const char *op);
 
 /**
- * Open a child span. Returns NULL when no transaction is running or it is full.
+ * Open a child span. Returns NULL when the transaction is full or was never started.
  *
- * A NULL return is safe to pass to `sentry_span_end()`, so a caller never has to check.
- * Dropped spans are counted and tagged on the transaction, because a trace quietly missing
- * spans reads as a complete picture of a simpler operation than the one that ran.
+ * NULL is safe to pass to `sentry_span_finish()` and `sentry_span_set_attribute()`, so a
+ * caller never has to check. Dropped spans are counted and tagged on the transaction —
+ * a trace quietly missing spans reads as a complete picture of a simpler operation.
  */
-sentry_span_t *sentry_span_begin(const char *op, const char *description);
+sentry_span_t *sentry_transaction_start_child(
+    sentry_transaction_t *txn, const char *op, const char *description);
 
 /** Close a span. NULL is a no-op. Closing twice keeps the first end time. */
-void sentry_span_end(sentry_span_t *span);
+void sentry_span_finish(sentry_span_t *span);
 
 /**
- * Attach a measurement to a span — free heap, RSSI, frame time.
+ * Attach a number to a span — free heap, RSSI, frame time in microseconds, millivolts.
  *
- * This is what metrics are now: the standalone metrics API is gone, and Sentry aggregates
- * numeric span attributes instead. Integer because everything worth measuring here is one.
+ * This is what "metrics" are now: the standalone metrics API was withdrawn, and Sentry
+ * aggregates numeric span attributes instead. Integer because everything worth measuring
+ * on a device is one, and because printf's float support is an opt-in linker flag here.
  */
-void sentry_span_set_measurement(sentry_span_t *span, const char *key, int64_t value);
+void sentry_span_set_attribute(sentry_span_t *span, const char *key, int64_t value);
 
 /**
  * Finish the transaction and send it.
  *
- * Returns `SENTRY_SEND_UNAVAILABLE` with nothing sent when the device has no clock. A
- * duration cannot be substituted server-side — the server sees one moment and a duration
- * needs two — so a transaction without one would place real work at an arbitrary time.
- * Errors are unaffected: they are still reportable with no clock at all.
+ * Returns `SENTRY_SEND_UNAVAILABLE` with nothing sent when the device has never been told
+ * the date. A duration has no server-side substitute — the server observes one moment and
+ * a duration needs two — so a transaction without one would place real work at an
+ * arbitrary time. Errors are unaffected: they remain reportable with no clock at all.
+ *
+ * Uses `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` of the caller's stack on top of `txn` itself.
  */
-sentry_response_t sentry_transaction_end(void);
+sentry_response_t sentry_transaction_finish(sentry_transaction_t *txn);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

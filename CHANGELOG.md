@@ -231,3 +231,18 @@
   feed it.
 - Running out of span slots is counted and tagged `spans_dropped:true` rather than silently
   truncating, so a shortened trace can be found rather than mistaken for a simpler operation.
+- The transaction is now caller-owned — `sentry_transaction_start(&txn, ...)` against a
+  `sentry_transaction_t` you declare — instead of living in the SDK singleton. It was 3,248
+  bytes of permanent RAM in every build whether or not spans were used, which is not what
+  this SDK does anywhere else: an event is prepared into a caller's struct and a crash is
+  read into a caller's `sentry_coredump_t`. Permanent RAM is back to zero.
+- `SENTRY_MICRO_MAX_SPANS` defaults to 4 and `SENTRY_MICRO_MAX_SPAN_ATTRS` to 4, down from
+  16 and 8. At 16 the transaction was 2,224 bytes and, with the 2 KB envelope buffer on top,
+  peak stack in the finish call reached 4.2 KB — against the 8 KB Arduino gives the loop
+  task, most of the rest of which a TLS handshake wants. Now 688 bytes and ~2.7 KB peak.
+- The API follows sentry-native's verbs: `sentry_transaction_start()`,
+  `sentry_transaction_start_child()`, `sentry_span_finish()`, `sentry_transaction_finish()`.
+  Previously `start` and `begin` were mixed for no reason, and `span_measure()` collided with
+  Sentry's separate "measurements" concept while actually setting an attribute. Ownership
+  still differs deliberately — sentry-native hands back heap-managed handles and this SDK
+  does not allocate.

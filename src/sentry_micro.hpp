@@ -92,29 +92,49 @@ inline sentry_response_t capture_message(sentry_level_t level, const char *messa
     return sentry_capture_message(level, message);
 }
 
-/** Begin a transaction for an operation about to run. See the C header for the rules. */
-inline bool transaction_start(const char *name, const char *op = nullptr)
+/**
+ * A transaction you declare where the operation runs.
+ *
+ *     sentry::Transaction txn;
+ *     sentry::transaction_start(txn, "set-colour");
+ *
+ * Derives from the C struct rather than wrapping it, the same way `Options` does, so there
+ * is no conversion at the boundary and no second copy of the state.
+ */
+struct Transaction : sentry_transaction_t {
+    Transaction()
+        : sentry_transaction_t()
+    {
+    }
+};
+
+/** Begin a transaction. See `sentry_transaction_start()` for the rules. */
+inline bool transaction_start(Transaction &txn, const char *name, const char *op = nullptr)
 {
-    return sentry_transaction_start(name, op);
+    return sentry_transaction_start(&txn, name, op);
 }
 
-/** Open a child span; NULL when there is no room or no transaction. */
-inline sentry_span_t *span_begin(const char *op, const char *description = nullptr)
+/** Open a child span; nullptr when the transaction is full. Safe to pass on regardless. */
+inline sentry_span_t *start_child(
+    Transaction &txn, const char *op, const char *description = nullptr)
 {
-    return sentry_span_begin(op, description);
+    return sentry_transaction_start_child(&txn, op, description);
 }
 
 /** Close a span. Safe with nullptr. */
-inline void span_end(sentry_span_t *span) { sentry_span_end(span); }
+inline void span_finish(sentry_span_t *span) { sentry_span_finish(span); }
 
-/** Attach a measurement to a span — this is what metrics are now. */
-inline void span_measure(sentry_span_t *span, const char *key, int64_t value)
+/** Attach a number to a span — this is what metrics are now. */
+inline void span_set_attribute(sentry_span_t *span, const char *key, int64_t value)
 {
-    sentry_span_set_measurement(span, key, value);
+    sentry_span_set_attribute(span, key, value);
 }
 
-/** Finish and send. Sends nothing if the device has no clock. */
-inline sentry_response_t transaction_end() { return sentry_transaction_end(); }
+/** Finish and send. Sends nothing if the device has never been told the date. */
+inline sentry_response_t transaction_finish(Transaction &txn)
+{
+    return sentry_transaction_finish(&txn);
+}
 
 /** Captured messages dropped by the local throttle since init. */
 inline uint32_t suppressed_count() { return sentry_suppressed_count(); }

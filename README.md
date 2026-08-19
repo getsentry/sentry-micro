@@ -690,21 +690,44 @@ Trace context alone makes the device visible in a trace *when it fails*. A trans
 it a participant:
 
 ```cpp
-sentry::transaction_start("set-colour", "device.operation");
-auto *decode = sentry::span_begin("ble.decode");
-sentry::span_measure(decode, "free_heap", ESP.getFreeHeap());
-sentry::span_end(decode);
-sentry::transaction_end();
+sentry::Transaction txn;                       // yours, on the stack — 688 bytes
+sentry::transaction_start(txn, "set-colour", "device.operation");
+
+auto *decode = sentry::start_child(txn, "ble.decode");
+sentry::span_set_attribute(decode, "free_heap", ESP.getFreeHeap());
+sentry::span_finish(decode);
+
+sentry::transaction_finish(txn);
 ```
 
-`span_begin()` returns `nullptr` when the transaction is full and `span_end(nullptr)` is a
-no-op, so firmware never has to check. Dropped spans are counted and tagged
+The verbs match sentry-native — `_start` / `_finish`, child spans started from their parent
+— so the shape is familiar from the desktop C SDK. What deliberately differs is ownership:
+sentry-native returns heap-managed handles, and this SDK does not allocate. **You declare the
+transaction where the operation runs**, the same way a crash report is read into a
+`sentry_coredump_t` you own. A device that never traces carries none of it.
+
+`start_child()` returns `nullptr` when the transaction is full, and passing `nullptr` onward
+is a no-op, so firmware never has to check. Dropped spans are counted and tagged
 `spans_dropped:true` — a trace quietly missing spans reads as a complete picture of a
 simpler operation than the one that ran.
 
-`span_measure()` **is** metrics now. The standalone metrics API is gone; Sentry aggregates
-numeric span attributes instead. Integers only, because printf's float support is an opt-in
-linker flag on this target that firmware routinely leaves off.
+`span_set_attribute()` **is** metrics now. The standalone metrics API was withdrawn; Sentry
+aggregates numeric span attributes instead. Integers only, because printf's float support is
+an opt-in linker flag on this target that firmware routinely leaves off.
+
+### What it costs
+
+| | |
+| --- | --- |
+| Flash, when used | **3.4 KB** (0 if you never call it — the linker drops it) |
+| Permanent RAM | **0** |
+| `sentry_transaction_t` on your stack | **688 B** at the default 4 spans |
+| Peak stack in `transaction_finish()` | ~2.7 KB, including the 2 KB envelope buffer |
+
+Four spans covers "decode, validate, apply, ack". Raising `SENTRY_MICRO_MAX_SPANS` costs
+128 bytes of stack each and has to stay inside `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` at
+roughly 150 bytes of JSON per span — Arduino's loop task has 8 KB of stack in total, and a
+TLS handshake already wants several KB of it.
 
 **Durations come from the monotonic clock, so they are always right.** Only the position on
 the timeline needs a real date — and if the device has never been told one,
