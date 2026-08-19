@@ -218,11 +218,19 @@ runs:
         [ "$INPUT_INCLUDE_SOURCES" = "true" ] || args+=(--no-sources)
         [ "$INPUT_SET_COMMITS" = "true" ] || args+=(--no-commits)
 
-        # A depth-1 checkout silently associates one commit, which looks like it worked.
+        # actions/checkout defaults to fetch-depth: 1, which is a shallow clone — so this
+        # is the normal state of an adopter's workspace, not an unusual one. Left alone it
+        # associates exactly one commit with the release and looks like it worked.
+        #
+        # Deepen it rather than complain about it: checkout leaves its credentials in the
+        # workspace, so the history is one fetch away and the caller does not have to know
+        # any of this. Only when that fails does it become the caller's problem, and then
+        # release.sh refuses rather than attaching a commit range it knows is wrong.
         if [ "$INPUT_SET_COMMITS" = "true" ] && [ "$INPUT_UPLOAD" = "true" ] \
             && [ -f "${GITHUB_WORKSPACE}/.git/shallow" ]; then
-          echo "::warning::shallow checkout: only the tip commit will be associated with " \
-               "the release. Set fetch-depth: 0 on actions/checkout."
+          echo "shallow checkout: fetching full history so the release gets real commits"
+          git -C "$GITHUB_WORKSPACE" fetch --unshallow --tags --quiet \
+            || echo "::warning::could not deepen the checkout"
         fi
         [ "$INPUT_WAIT" = "true" ] || args+=(--no-wait)
 

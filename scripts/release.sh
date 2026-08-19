@@ -159,6 +159,25 @@ if [ "$DO_UPLOAD" -eq 1 ] && [ -z "${SENTRY_AUTH_TOKEN:-}" ] && [ ! -f "$HOME/.s
     exit 1
 fi
 
+# Checked here rather than after the build: a doomed run should cost seconds, not three
+# minutes of compiling and an upload, and it should not leave a half-populated release
+# behind either.
+#
+# A shallow clone yields exactly one commit, which is not "fewer commits" — it is a release
+# claiming the build contains a single change when it contains a hundred, and it renders
+# identically to the truth. `--is-shallow-repository` rather than looking for `.git/shallow`
+# because it also answers correctly inside a worktree, where `.git` is a file.
+if [ "$DO_UPLOAD" -eq 1 ] && [ "$SET_COMMITS" -eq 1 ] \
+    && [ "$( cd "$PROJECT_PATH" && git rev-parse --is-shallow-repository 2>/dev/null )" = "true" ]
+then
+    echo "error: ${PROJECT_PATH} is a shallow clone, so only one commit would be associated" >&2
+    echo "       with this release — which reads as 'this build contains one change' and" >&2
+    echo "       would be wrong." >&2
+    echo "       Use 'fetch-depth: 0' on actions/checkout, run 'git fetch --unshallow'," >&2
+    echo "       or pass --no-commits to ship without them." >&2
+    exit 1
+fi
+
 # Default the release to something traceable back to a commit.
 if [ -z "$RELEASE" ]; then
     if git rev-parse --git-dir >/dev/null 2>&1; then

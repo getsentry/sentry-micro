@@ -439,9 +439,16 @@ cannot attach a debugger to. Add the repository to your Sentry organization's in
 and you additionally get suspect commits and links back to GitHub; without one, the commit
 list still lands, under a repository named after the git remote. `--no-commits` opts out.
 
-This needs real git history. `actions/checkout` defaults to depth 1, which associates
-exactly one commit and looks like it worked — the Action warns, and `fetch-depth: 0` fixes
-it.
+This needs real git history, and `actions/checkout` defaults to `fetch-depth: 1` — so a
+shallow clone is the *normal* state of a CI workspace, not an unusual one. Left alone it
+associates exactly one commit, which is not "fewer commits": it is a release claiming the
+build contains a single change when it contains a hundred, and it renders identically to
+the truth.
+
+So the Action deepens the checkout itself (`git fetch --unshallow`, using the credentials
+`actions/checkout` already left behind), and if that is not possible `release.sh` refuses
+the release rather than attaching a commit range it knows is wrong. `fetch-depth: 0` avoids
+the round trip; `--no-commits` / `set-commits: false` ships without them deliberately.
 
 An **organization auth token** (scope `org:ci`) is the right kind and is what CI should use;
 it embeds its own org, which is why the script does not pass one. `sentry-cli login` works

@@ -151,8 +151,14 @@
   between builds rather than only that a build broke — which on a device you cannot attach a
   debugger to is usually the more useful half. Run from the firmware's own repository, not
   sentry-micro's, so the Action associates the adopter's commits and not this SDK's.
-  `--no-commits` / `set-commits: false` opts out, and the Action warns on a shallow checkout,
-  where a single commit would be associated and would look like it had worked.
+  `--no-commits` / `set-commits: false` opts out.
+- A shallow checkout no longer quietly associates one commit. `actions/checkout` defaults to
+  `fetch-depth: 1`, so this is the normal state of a CI workspace — and one commit is not
+  "fewer commits", it is a release claiming the build contains a single change when it
+  contains a hundred, rendering identically to the truth. The Action now deepens the
+  checkout itself, and `release.sh` refuses the release if it is still shallow, before
+  building rather than after, so a doomed run costs a second and leaves no half-populated
+  release behind.
 - `sentry_trace_adopt()` now checks the incoming `sentry-org_id` baggage key against the
   device's own (`Options::org_id`, resolved the same way it always has been) before joining
   a trace, and refuses one from a different organization rather than mixing telemetry across
