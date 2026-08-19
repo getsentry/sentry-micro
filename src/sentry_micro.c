@@ -252,6 +252,13 @@ bool sentry_trace_adopt(const char *sentry_trace, const char *baggage)
     sentry_trace_context_t parsed;
     if (!sentry_trace_adopt_header(&parsed, sentry_trace, baggage, span_bytes)) {
         debug_log("ignored a malformed sentry-trace header");
+        /* Parsing now goes into a local, not g_state.trace directly, so a bad header no
+         * longer clears it as a side effect of the attempt. It still has to: leaving a
+         * stale trace active here is exactly the "confidently wrong association" this
+         * whole design exists to avoid — a later panic would attach to a request that was
+         * rejected, not the one actually in flight. */
+        sentry_trace_clear(&g_state.trace);
+        sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
         return false;
     }
 

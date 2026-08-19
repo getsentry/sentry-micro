@@ -180,7 +180,12 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
     if (baggage_lookup(baggage, "sentry-org_id", org_id, sizeof(org_id))) {
         size_t org_id_len = strlen(org_id);
         if (org_id_len > 0 && is_digit_run(org_id, org_id_len)) {
-            memcpy(ctx->org_id, org_id, sizeof(org_id));
+            /* Only the digits and their terminator are initialised — unlike replay_id and
+             * sample_rand above and below, org_id has no fixed length, so a short value
+             * leaves the rest of this buffer as whatever the stack already held. Copying
+             * `sizeof(org_id)` would carry that into `ctx->org_id`, and from there into
+             * RTC memory with the rest of the struct. */
+            memcpy(ctx->org_id, org_id, org_id_len + 1);
         }
     }
 
