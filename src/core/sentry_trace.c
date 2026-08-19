@@ -51,6 +51,14 @@ static bool is_digit_run(const char *text, size_t count)
     return true;
 }
 
+/** `sample_rand` is always `"0."` plus exactly six digits — the wire format leaves no
+ *  other value representable, so anything else is simply not one. */
+static bool is_well_formed_sample_rand(const char *text, size_t len)
+{
+    return len == SENTRY_MICRO_SAMPLE_RAND_LEN - 1 && text[0] == '0' && text[1] == '.'
+        && is_digit_run(text + 2, 6);
+}
+
 void sentry_trace_id_format(char *out, const uint8_t random_bytes[16])
 {
     if (out && random_bytes) {
@@ -174,6 +182,14 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
         if (org_id_len > 0 && is_digit_run(org_id, org_id_len)) {
             memcpy(ctx->org_id, org_id, sizeof(org_id));
         }
+    }
+
+    /* Same again: nothing downstream needs this yet, so a malformed value is dropped
+     * rather than costing a trace it has nothing to do with. */
+    char sample_rand[SENTRY_MICRO_SAMPLE_RAND_LEN];
+    if (baggage_lookup(baggage, "sentry-sample_rand", sample_rand, sizeof(sample_rand))
+        && is_well_formed_sample_rand(sample_rand, strlen(sample_rand))) {
+        memcpy(ctx->sample_rand, sample_rand, sizeof(sample_rand));
     }
     return true;
 }

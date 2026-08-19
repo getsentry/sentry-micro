@@ -33,6 +33,8 @@ extern "C" {
 #define SENTRY_MICRO_TRACE_ID_LEN 33
 /** 16 hex characters plus the terminator. A span id is 8 bytes. */
 #define SENTRY_MICRO_SPAN_ID_LEN 17
+/** `"0."` plus exactly six digits, plus the terminator — the wire format is fixed-width. */
+#define SENTRY_MICRO_SAMPLE_RAND_LEN 9
 
 /**
  * One in-flight trace, as this device sees it.
@@ -65,6 +67,18 @@ typedef struct {
      * are.
      */
     char org_id[SENTRY_MICRO_MAX_ORG_ID_LEN];
+
+    /**
+     * The `sentry-sample_rand` baggage value, verbatim: `"0."` followed by six digits.
+     * Empty when absent.
+     *
+     * Carried, not consumed: this device makes no sampling decisions of its own — there
+     * are no spans yet to sample — so there is nothing here to use it *for*. It exists so
+     * that whatever eventually does gain that need does not have to also go re-litigate
+     * where the value comes from. Not currently written back out anywhere; a device
+     * forwarding a request onward has no `baggage` writer yet to put it in.
+     */
+    char sample_rand[SENTRY_MICRO_SAMPLE_RAND_LEN];
 
     /** The upstream sampling decision. Honour it; do not make one up. */
     bool sampled;

@@ -210,6 +210,43 @@ static void test_one_sided_knowledge_defers_to_strictness(void)
     TEST_ASSERT_FALSE(sentry_trace_can_continue(NULL, "1234", true));
 }
 
+static void test_picks_the_sample_rand_out_of_baggage(void)
+{
+    sentry_trace_context_t ctx;
+    const char *baggage = "sentry-environment=production,sentry-sample_rand=0.654321";
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(&ctx, TRACE "-" PARENT "-1", baggage, SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("0.654321", ctx.sample_rand);
+}
+
+static void test_a_malformed_sample_rand_does_not_cost_the_trace(void)
+{
+    sentry_trace_context_t ctx;
+    /* Same bonus-field treatment as replay_id and org_id: garbled, so dropped, not a
+     * reason to lose the trace it arrived on. */
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-sample_rand=1.654321", SPAN_BYTES));
+    TEST_ASSERT_TRUE(ctx.active);
+    TEST_ASSERT_EQUAL_STRING("", ctx.sample_rand);
+
+    /* Too few digits. */
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-sample_rand=0.1", SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("", ctx.sample_rand);
+
+    /* Not a decimal at all. */
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-sample_rand=abcdefgh", SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("", ctx.sample_rand);
+}
+
+static void test_no_sample_rand_is_ordinary(void)
+{
+    sentry_trace_context_t ctx;
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-replay_id=" REPLAY, SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("", ctx.sample_rand);
+}
+
 static void test_does_not_confuse_a_key_that_merely_ends_the_same(void)
 {
     sentry_trace_context_t ctx;
@@ -233,8 +270,8 @@ static void test_begins_a_device_originated_trace(void)
 static void test_clearing_leaves_nothing_behind(void)
 {
     sentry_trace_context_t ctx;
-    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
-        &ctx, TRACE "-" PARENT "-1", "sentry-replay_id=" REPLAY ",sentry-org_id=1234", SPAN_BYTES));
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(&ctx, TRACE "-" PARENT "-1",
+        "sentry-replay_id=" REPLAY ",sentry-org_id=1234,sentry-sample_rand=0.654321", SPAN_BYTES));
 
     sentry_trace_clear(&ctx);
 
@@ -243,6 +280,7 @@ static void test_clearing_leaves_nothing_behind(void)
     TEST_ASSERT_EQUAL_STRING("", ctx.trace_id);
     TEST_ASSERT_EQUAL_STRING("", ctx.replay_id);
     TEST_ASSERT_EQUAL_STRING("", ctx.org_id);
+    TEST_ASSERT_EQUAL_STRING("", ctx.sample_rand);
 }
 
 static void test_writes_a_header_for_an_outbound_call(void)
@@ -310,6 +348,9 @@ int main(void)
     RUN_TEST(test_refuses_a_trace_from_a_different_org_regardless_of_strictness);
     RUN_TEST(test_continues_when_neither_side_knows_its_org);
     RUN_TEST(test_one_sided_knowledge_defers_to_strictness);
+    RUN_TEST(test_picks_the_sample_rand_out_of_baggage);
+    RUN_TEST(test_a_malformed_sample_rand_does_not_cost_the_trace);
+    RUN_TEST(test_no_sample_rand_is_ordinary);
     RUN_TEST(test_does_not_confuse_a_key_that_merely_ends_the_same);
     RUN_TEST(test_begins_a_device_originated_trace);
     RUN_TEST(test_clearing_leaves_nothing_behind);
