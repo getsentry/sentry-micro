@@ -178,6 +178,38 @@ static void test_no_org_id_is_ordinary(void)
     TEST_ASSERT_EQUAL_STRING("", ctx.org_id);
 }
 
+static void test_continues_when_org_ids_match(void)
+{
+    TEST_ASSERT_TRUE(sentry_trace_can_continue("1234", "1234", false));
+    TEST_ASSERT_TRUE(sentry_trace_can_continue("1234", "1234", true));
+}
+
+static void test_refuses_a_trace_from_a_different_org_regardless_of_strictness(void)
+{
+    /* A known mismatch is never ambiguous — `strict` only governs the case where one side
+     * has nothing to compare. */
+    TEST_ASSERT_FALSE(sentry_trace_can_continue("1234", "5678", false));
+    TEST_ASSERT_FALSE(sentry_trace_can_continue("1234", "5678", true));
+}
+
+static void test_continues_when_neither_side_knows_its_org(void)
+{
+    TEST_ASSERT_TRUE(sentry_trace_can_continue(NULL, NULL, false));
+    TEST_ASSERT_TRUE(sentry_trace_can_continue(NULL, NULL, true));
+    TEST_ASSERT_TRUE(sentry_trace_can_continue("", "", true));
+}
+
+static void test_one_sided_knowledge_defers_to_strictness(void)
+{
+    /* Not strict (the default): benefit of the doubt when only one side can compare. */
+    TEST_ASSERT_TRUE(sentry_trace_can_continue("1234", NULL, false));
+    TEST_ASSERT_TRUE(sentry_trace_can_continue(NULL, "1234", false));
+
+    /* Strict: an incomplete comparison is treated as a mismatch. */
+    TEST_ASSERT_FALSE(sentry_trace_can_continue("1234", NULL, true));
+    TEST_ASSERT_FALSE(sentry_trace_can_continue(NULL, "1234", true));
+}
+
 static void test_does_not_confuse_a_key_that_merely_ends_the_same(void)
 {
     sentry_trace_context_t ctx;
@@ -274,6 +306,10 @@ int main(void)
     RUN_TEST(test_picks_the_org_id_out_of_baggage);
     RUN_TEST(test_a_non_digit_org_id_does_not_cost_the_trace);
     RUN_TEST(test_no_org_id_is_ordinary);
+    RUN_TEST(test_continues_when_org_ids_match);
+    RUN_TEST(test_refuses_a_trace_from_a_different_org_regardless_of_strictness);
+    RUN_TEST(test_continues_when_neither_side_knows_its_org);
+    RUN_TEST(test_one_sided_knowledge_defers_to_strictness);
     RUN_TEST(test_does_not_confuse_a_key_that_merely_ends_the_same);
     RUN_TEST(test_begins_a_device_originated_trace);
     RUN_TEST(test_clearing_leaves_nothing_behind);

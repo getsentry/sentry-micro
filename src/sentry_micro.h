@@ -90,6 +90,19 @@ typedef struct {
     const char *org_id;
 
     /**
+     * Whether `sentry_trace_adopt()` requires *both* sides to know their org id and agree,
+     * rather than giving the benefit of the doubt when only one side does.
+     *
+     * Off by default: most callers of a device have no idea what org id means, and
+     * treating their silence as a mismatch would refuse to join traces from perfectly
+     * ordinary requests. Turn this on only where an unknown org id on either side should
+     * itself be treated as suspicious — a closed fleet talking to a single known org, for
+     * instance. A trace with a *known, different* org id is always refused either way; this
+     * only governs the ambiguous case where one side has nothing to compare.
+     */
+    bool strict_trace_continuation;
+
+    /**
      * GNU build-id of this firmware, lowercase hex — the key Sentry uses to find the debug
      * files uploaded for this exact build. Optional; without it, addresses in a backtrace
      * can never be resolved to functions and lines.
@@ -243,6 +256,13 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
  * during the call and never retained. Returns false — leaving no trace active — if the
  * header is malformed; see `core/sentry_trace.h` for why a half-readable header is
  * rejected rather than partly believed.
+ *
+ * A well-formed header carrying a `sentry-org_id` that disagrees with this device's own
+ * (see `options.org_id`) is not adopted either — joining it would put this device's
+ * telemetry in someone else's organization. The request still gets a trace; the device
+ * just becomes its head instead, exactly as `sentry_trace_start()` would. Returns true in
+ * that case too, since a trace is active either way — check `sentry_trace_current()` if
+ * the caller needs to know which one it got.
  *
  * The SDK does not care how those strings reached the device. BLE characteristic, HTTP
  * header, a field in your own protocol: they are two strings by the time they get here.

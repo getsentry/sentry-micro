@@ -178,6 +178,21 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
     return true;
 }
 
+bool sentry_trace_can_continue(const char *incoming_org_id, const char *own_org_id, bool strict)
+{
+    bool incoming_known = incoming_org_id && incoming_org_id[0];
+    bool own_known = own_org_id && own_org_id[0];
+
+    if (incoming_known && own_known) {
+        return strcmp(incoming_org_id, own_org_id) == 0;
+    }
+    if (incoming_known != own_known) {
+        return !strict;
+    }
+    /* Neither side knows its org id — nothing to disagree about. */
+    return true;
+}
+
 void sentry_trace_begin(sentry_trace_context_t *ctx, const uint8_t trace_id_bytes[16],
     const uint8_t span_id_bytes[8], bool sampled)
 {

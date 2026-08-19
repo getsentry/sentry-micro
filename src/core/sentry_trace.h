@@ -95,6 +95,28 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
     const char *baggage, const uint8_t span_id_bytes[8]);
 
 /**
+ * Whether a trace carrying `incoming_org_id` is safe to join when this device's own
+ * organization id is `own_org_id`.
+ *
+ * A device is not required to know its org id, and neither is whoever is calling it — so
+ * "unknown" on either side is not, by itself, a reason to refuse. What is a reason: two
+ * *different* known ids, which means the trace belongs to somebody else's organization
+ * entirely and joining it would leak this device's telemetry into the wrong account.
+ *
+ * `strict` decides the ambiguous middle case, where exactly one side knows its id:
+ *
+ *   both known, equal    -> true, always
+ *   both known, differ   -> false, always
+ *   exactly one known    -> true unless `strict`
+ *   neither known        -> true, always
+ *
+ * NULL and "" both count as "not known". Pure and host-testable, like the rest of this
+ * file — the actual decision of what to do on `false` (become the head of a new trace
+ * rather than simply failing) is the caller's, since it involves minting fresh ids.
+ */
+bool sentry_trace_can_continue(const char *incoming_org_id, const char *own_org_id, bool strict);
+
+/**
  * Begin a trace this device is the origin of — a boot, an OTA, a scheduled task.
  *
  * No parent, and sampling is this device's decision because nobody else made one.
