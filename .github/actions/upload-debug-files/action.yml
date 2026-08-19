@@ -72,6 +72,14 @@ inputs:
       debug files for a build that will never ship.
     required: false
     default: "true"
+  set-commits:
+    description: >-
+      Tell Sentry which commits went into this build, so an issue can show what changed
+      rather than only that something broke. Requires the checkout to have history —
+      `actions/checkout` defaults to depth 1, which would associate a single commit, so
+      use `fetch-depth: 0`.
+    required: false
+    default: "true"
   include-sources:
     description: >-
       Embed source text alongside the debug info, so Sentry shows the offending line and
@@ -179,6 +187,7 @@ runs:
         INPUT_RELEASE: ${{ inputs.release }}
         INPUT_UPLOAD: ${{ inputs.upload }}
         INPUT_INCLUDE_SOURCES: ${{ inputs.include-sources }}
+        INPUT_SET_COMMITS: ${{ inputs.set-commits }}
         INPUT_WAIT: ${{ inputs.wait }}
       run: |
         set -euo pipefail
@@ -207,6 +216,14 @@ runs:
         args=()
         [ "$INPUT_UPLOAD" = "true" ] || args+=(--no-upload)
         [ "$INPUT_INCLUDE_SOURCES" = "true" ] || args+=(--no-sources)
+        [ "$INPUT_SET_COMMITS" = "true" ] || args+=(--no-commits)
+
+        # A depth-1 checkout silently associates one commit, which looks like it worked.
+        if [ "$INPUT_SET_COMMITS" = "true" ] && [ "$INPUT_UPLOAD" = "true" ] \
+            && [ -f "${GITHUB_WORKSPACE}/.git/shallow" ]; then
+          echo "::warning::shallow checkout: only the tip commit will be associated with " \
+               "the release. Set fetch-depth: 0 on actions/checkout."
+        fi
         [ "$INPUT_WAIT" = "true" ] || args+=(--no-wait)
 
         # No `|| true` anywhere in this loop, on purpose. A variant that fails to build,

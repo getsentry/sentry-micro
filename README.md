@@ -433,6 +433,16 @@ export SENTRY_MICRO_DSN='https://...'
 scripts/release.sh -e esp32dev
 ```
 
+`release.sh` also tells Sentry **which commits went into the build**, so an issue answers
+"what changed" and not just "something broke" — usually the more useful half on a device you
+cannot attach a debugger to. Add the repository to your Sentry organization's integrations
+and you additionally get suspect commits and links back to GitHub; without one, the commit
+list still lands, under a repository named after the git remote. `--no-commits` opts out.
+
+This needs real git history. `actions/checkout` defaults to depth 1, which associates
+exactly one commit and looks like it worked — the Action warns, and `fetch-depth: 0` fixes
+it.
+
 An **organization auth token** (scope `org:ci`) is the right kind and is what CI should use;
 it embeds its own org, which is why the script does not pass one. `sentry-cli login` works
 too for a browser flow. Pass `--no-upload` to build and stamp without talking to Sentry.

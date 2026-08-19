@@ -33,6 +33,7 @@ DO_UPLOAD=1
 UPLOAD_FIRMWARE=0
 WAIT_FOR_PROCESSING=1
 INCLUDE_SOURCES=1
+SET_COMMITS=1
 JSON_SUMMARY=""
 
 usage() {
@@ -49,6 +50,7 @@ Options:
       --no-wait          return as soon as the upload is accepted, without waiting
                          for Sentry to finish processing it
       --no-sources       upload debug info only, without embedding the source text
+      --no-commits       do not tell Sentry which commits went into this build
       --json-summary F   write {env, release, code_id, debug_id, ...} to F
   -h, --help
 EOF
@@ -63,6 +65,7 @@ while [ $# -gt 0 ]; do
         --upload-firmware) UPLOAD_FIRMWARE=1; shift ;;
         --no-wait) WAIT_FOR_PROCESSING=0; shift ;;
         --no-sources) INCLUDE_SOURCES=0; shift ;;
+        --no-commits) SET_COMMITS=0; shift ;;
         --json-summary) JSON_SUMMARY="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -275,11 +278,40 @@ PYEOF
 
     echo
     echo "→ registering the release"
-    # Lets Sentry associate events with this build even before any crash arrives. Not fatal
-    # if it fails — the debug files are what symbolication actually needs.
+    # Lets Sentry associate events with this build even before any crash arrives. None of
+    # this is fatal — the debug files are what symbolication actually needs, and a release
+    # that failed to register still produces readable backtraces.
     # shellcheck disable=SC2086
-    sentry-cli releases new $ORG_ARGS --project "$SENTRY_PROJECT" "$RELEASE" \
-        >/dev/null 2>&1 || echo "  (could not register the release; debug files are uploaded)"
+    if ! sentry-cli releases new $ORG_ARGS --project "$SENTRY_PROJECT" "$RELEASE" >/dev/null 2>&1
+    then
+        echo "  (could not register the release; debug files are uploaded)"
+    else
+        if [ "$SET_COMMITS" -eq 1 ]; then
+            # Which commits went into this build. Without it an issue tells you *that* the
+            # firmware broke but not *what changed* — and on a device, "what changed" is
+            # usually the whole question, because you cannot reproduce it at a breakpoint.
+            #
+            # Run from the firmware's own repository rather than this one. When the GitHub
+            # Action drives this script, $REPO_ROOT is the checked-out sentry-micro and the
+            # commits that matter are the adopter's, not ours.
+            #
+            # --auto prefers a repository configured in Sentry's integrations, which is
+            # what unlocks suspect commits and links back to GitHub, and falls back to the
+            # local git tree when there is none — where you still get the commit list, just
+            # under a repo named after the git remote. --ignore-missing keeps this working
+            # when the previous release's commit is absent from the clone, which a shallow
+            # CI checkout guarantees.
+            # shellcheck disable=SC2086
+            ( cd "$PROJECT_PATH" && sentry-cli releases set-commits --auto --ignore-missing \
+                $ORG_ARGS --project "$SENTRY_PROJECT" "$RELEASE" ) \
+                || echo "  (no commits associated; is $PROJECT_PATH inside a git repository?)"
+        fi
+        # Without this the release has no ship date, so "regressed in" and the release
+        # comparison views have nothing to sort by.
+        # shellcheck disable=SC2086
+        sentry-cli releases finalize $ORG_ARGS --project "$SENTRY_PROJECT" "$RELEASE" \
+            >/dev/null 2>&1 || echo "  (could not finalize the release)"
+    fi
 fi
 
 if [ "$UPLOAD_FIRMWARE" -eq 1 ]; then

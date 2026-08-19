@@ -146,3 +146,10 @@
 - The active trace survives a panic in RTC slow memory (`RTC_NOINIT_ATTR`), which is cleared
   on power-on but preserved across a software reset — so a crash reported on the next boot
   still carries the trace it happened inside, while a cold boot correctly carries none.
+- Releases now carry their commits. `release.sh` runs `sentry-cli releases set-commits --auto
+  --ignore-missing` and `releases finalize` after registering, so an issue shows what changed
+  between builds rather than only that a build broke — which on a device you cannot attach a
+  debugger to is usually the more useful half. Run from the firmware's own repository, not
+  sentry-micro's, so the Action associates the adopter's commits and not this SDK's.
+  `--no-commits` / `set-commits: false` opts out, and the Action warns on a shallow checkout,
+  where a single commit would be associated and would look like it had worked.
