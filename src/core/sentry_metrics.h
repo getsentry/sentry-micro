@@ -16,8 +16,10 @@
  * returns, and the table rides the next flush that was happening anyway. This is what makes
  * the hot path measurable.
  *
- * No allocation, no clock: a metric carries no timestamp, so unlike logs and transactions
- * these work on a device that has never been told the date.
+ * No allocation. A clock *is* required — every metric carries a timestamp, which the field
+ * table in Sentry's spec marks required even though its example payloads omit it. Building
+ * to those examples produced metrics that ingest accepted at the edge and dropped, with
+ * nothing anywhere reporting it.
  */
 #ifndef SENTRY_MICRO_METRICS_H_INCLUDED
 #define SENTRY_MICRO_METRICS_H_INCLUDED
@@ -84,14 +86,19 @@ bool sentry_metrics_empty(const sentry_metrics_t *metrics);
 /**
  * Write a complete envelope carrying every metric in the table.
  *
- * `trace_id` is required on every metric by the protocol and must come from the current
- * propagation context; pass the active trace, or one minted for the batch.
+ * `trace_id` and `timestamp` are both required on every metric by the protocol. The trace
+ * must come from the current propagation context — pass the active trace, or one minted for
+ * the batch. `now_unix_us` stamps every metric in the batch with the moment it was flushed,
+ * which is the honest reading of an aggregate describing the interval that just ended.
+ *
+ * Returns 0 when `now_unix_us` is 0, because a metric without a timestamp is dropped
+ * server-side after the radio has already been paid for.
  *
  * Returns bytes needed excluding the NUL; >= `cap` means nothing usable was written, and 0
  * means there was nothing to send.
  */
-size_t sentry_metrics_envelope_write(
-    char *buf, size_t cap, const sentry_metrics_t *metrics, const char *trace_id);
+size_t sentry_metrics_envelope_write(char *buf, size_t cap, const sentry_metrics_t *metrics,
+    const char *trace_id, uint64_t now_unix_us);
 
 #ifdef __cplusplus
 }

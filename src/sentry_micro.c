@@ -380,9 +380,18 @@ static void flush_metrics(void)
         return;
     }
 
+    /* Every metric needs a timestamp, so a device that has not been told the date cannot
+     * send yet. Retained rather than dropped, unlike a transaction: a counter that keeps
+     * accumulating simply covers a longer interval, whereas a duration would go stale. */
+    uint64_t now_unix_us = sentry_device_unix_time_us();
+    if (now_unix_us == 0) {
+        debug_log("holding metrics: the device has not been told the date");
+        return;
+    }
+
     char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
     size_t needed = sentry_metrics_envelope_write(
-        envelope, sizeof(envelope), &g_state.metrics, g_state.trace.trace_id);
+        envelope, sizeof(envelope), &g_state.metrics, g_state.trace.trace_id, now_unix_us);
     if (needed == 0 || needed >= sizeof(envelope)) {
         debug_log("metrics need %u bytes, envelope buffer is %u", (unsigned)needed,
             (unsigned)sizeof(envelope));

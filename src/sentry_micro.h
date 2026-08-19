@@ -407,8 +407,10 @@ sentry_response_t sentry_transaction_finish(sentry_transaction_t *txn);
  * `name` and `unit` are not copied; pass literals. Values are integers, because printf's
  * float support is an opt-in linker flag here and everything worth counting is whole.
  *
- * Needs no clock: a metric carries no timestamp, so unlike a transaction this works on a
- * device that has never been told the date.
+ * A clock is required, though: every metric carries a timestamp. Until the device has been
+ * told the date the table keeps accumulating and nothing is sent — a counter covering a
+ * longer interval is still true, which is why these are held rather than dropped the way a
+ * transaction's stale duration would be.
  */
 void sentry_metric_count(const char *name, int64_t delta, const char *unit);
 

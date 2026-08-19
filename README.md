@@ -733,8 +733,10 @@ times a second cannot be traced at any sampling rate — but it can be counted. 
 fixed table and return; the table rides the next `sentry_flush()`, on whatever interval your
 `loop()` already uses.
 
-They also need no clock. A metric carries no timestamp, so unlike a transaction these work
-on a device that has never been told the date.
+They do need a clock, though — every metric carries a timestamp. Until the device has been
+told the date, the table keeps accumulating and nothing is sent: a counter covering a longer
+interval is still true, which is why metrics *wait* where a transaction's stale duration
+would make it drop.
 
 The table holds `SENTRY_MICRO_MAX_METRICS` (8) distinct **names** — a counter hit a thousand
 times a second is still one slot. A ninth name is dropped and counted rather than evicting

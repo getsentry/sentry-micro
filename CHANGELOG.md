@@ -268,3 +268,11 @@
   name that does not fit is dropped and counted rather than evicting one already
   accumulating, because a running total that silently restarts is worse than one that never
   started. `sentry_metrics_dropped_count()` reports it.
+- Metric items carry the required `timestamp`. They were built without one, because the
+  metrics spec's example payloads omit it while its field table marks it required — so ingest
+  accepted the envelope at the edge and dropped every metric inside, with nothing reporting
+  the loss and the Metrics page still showing its onboarding screen. The tests asserted the
+  invented shape, so they passed too. Corrected, along with the claim that metrics need no
+  clock: they do, and until the device has been told the date the table keeps accumulating
+  rather than being dropped — a counter over a longer interval is still true, unlike a stale
+  duration.

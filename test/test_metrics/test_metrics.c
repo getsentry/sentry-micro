@@ -16,6 +16,8 @@
 #include "sentry_metrics.h"
 
 #define TRACE "d49d9bf66f13450b81f65bc51cf49c03"
+/* 2026-08-19T00:00:00Z in microseconds. */
+#define NOW_US 1755561600000000ULL
 
 void setUp(void) { }
 void tearDown(void) { }
@@ -118,7 +120,7 @@ static void test_writes_a_trace_metric_envelope(void)
     sentry_metrics_count(&m, "ble.disconnect", 3, NULL);
     sentry_metrics_gauge(&m, "device.free_heap", 201716, "byte");
 
-    size_t len = sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE);
+    size_t len = sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE, NOW_US);
     TEST_ASSERT_TRUE(len > 0 && len < sizeof(buf));
 
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"trace_metric\""));
@@ -134,6 +136,24 @@ static void test_writes_a_trace_metric_envelope(void)
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"trace_id\":\"" TRACE "\""));
     /* A number, not a string — a quoted value would not aggregate. */
     TEST_ASSERT_NULL(strstr(buf, "\"value\":\""));
+    /* Required on every metric. The spec's own example payloads omit it, so this was built
+     * without one at first: ingest accepted the envelope at the edge and dropped every
+     * metric inside it, with nothing anywhere reporting the loss. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"timestamp\":1755561600.000000"));
+}
+
+static void test_no_clock_means_no_envelope(void)
+{
+    sentry_metrics_t m;
+    char buf[2048];
+    sentry_metrics_reset(&m);
+    sentry_metrics_count(&m, "x", 1, NULL);
+
+    /* Refused rather than stamped at the epoch. The caller holds the table and tries again
+     * once the device has been told the date — a counter covering a longer interval is
+     * still true, unlike a duration, which is why metrics wait where transactions drop. */
+    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE, 0));
+    TEST_ASSERT_EQUAL_STRING("", buf);
 }
 
 static void test_no_trace_means_no_envelope(void)
@@ -145,8 +165,8 @@ static void test_no_trace_means_no_envelope(void)
 
     /* The protocol requires a trace id on every metric, so sending without one would be
      * rejected server-side after the radio had already been paid for. */
-    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, ""));
-    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, NULL));
+    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, "", NOW_US));
+    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, NULL, NOW_US));
 }
 
 static void test_an_empty_table_writes_nothing(void)
@@ -155,7 +175,7 @@ static void test_an_empty_table_writes_nothing(void)
     char buf[2048];
     sentry_metrics_reset(&m);
 
-    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE));
+    TEST_ASSERT_EQUAL_UINT(0, sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE, NOW_US));
     TEST_ASSERT_EQUAL_STRING("", buf);
 }
 
@@ -167,7 +187,7 @@ static void test_a_negative_gauge_survives_the_round_trip(void)
 
     /* RSSI is the obvious one, and an unsigned write would turn -67 into 4294967229. */
     sentry_metrics_gauge(&m, "wifi.rssi", -67, NULL);
-    TEST_ASSERT_TRUE(sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE) > 0);
+    TEST_ASSERT_TRUE(sentry_metrics_envelope_write(buf, sizeof(buf), &m, TRACE, NOW_US) > 0);
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"value\":-67"));
 }
 
@@ -189,6 +209,7 @@ int main(void)
     RUN_TEST(test_empty_until_something_is_recorded);
     RUN_TEST(test_writes_a_trace_metric_envelope);
     RUN_TEST(test_no_trace_means_no_envelope);
+    RUN_TEST(test_no_clock_means_no_envelope);
     RUN_TEST(test_an_empty_table_writes_nothing);
     RUN_TEST(test_a_negative_gauge_survives_the_round_trip);
     RUN_TEST(test_null_is_safe);

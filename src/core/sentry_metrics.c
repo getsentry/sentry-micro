@@ -98,8 +98,8 @@ static const char *type_name(sentry_metric_type_t type)
     return type == SENTRY_METRIC_COUNTER ? "counter" : "gauge";
 }
 
-static uint8_t write_items(
-    sentry_json_t *writer, const sentry_metrics_t *metrics, const char *trace_id)
+static uint8_t write_items(sentry_json_t *writer, const sentry_metrics_t *metrics,
+    const char *trace_id, uint64_t now_unix_us)
 {
     uint8_t count = 0;
     sentry_json_key(writer, "items");
@@ -119,6 +119,10 @@ static uint8_t write_items(
          * rule logs follow, and the reason both are resolved at flush rather than at the
          * call site. */
         sentry_json_kv_string(writer, "trace_id", trace_id);
+        /* Required, despite being absent from the spec's own example payloads. Every metric
+         * in a batch shares the flush time: an aggregate describes the interval that just
+         * ended, and the individual observations inside it were never timestamped. */
+        sentry_json_kv_micros(writer, "timestamp", now_unix_us);
         sentry_json_object_end(writer);
         count++;
     }
@@ -126,13 +130,14 @@ static uint8_t write_items(
     return count;
 }
 
-size_t sentry_metrics_envelope_write(
-    char *buf, size_t cap, const sentry_metrics_t *metrics, const char *trace_id)
+size_t sentry_metrics_envelope_write(char *buf, size_t cap, const sentry_metrics_t *metrics,
+    const char *trace_id, uint64_t now_unix_us)
 {
     if (buf && cap > 0) {
         buf[0] = '\0';
     }
-    if (!metrics || !trace_id || !trace_id[0] || sentry_metrics_empty(metrics)) {
+    if (!metrics || !trace_id || !trace_id[0] || now_unix_us == 0
+        || sentry_metrics_empty(metrics)) {
         return 0;
     }
 
@@ -141,7 +146,7 @@ size_t sentry_metrics_envelope_write(
     sentry_json_t counter;
     sentry_json_init(&counter, NULL, 0);
     sentry_json_object_begin(&counter);
-    uint8_t item_count = write_items(&counter, metrics, trace_id);
+    uint8_t item_count = write_items(&counter, metrics, trace_id, now_unix_us);
     sentry_json_object_end(&counter);
     size_t payload_len = counter.len;
 
@@ -168,7 +173,7 @@ size_t sentry_metrics_envelope_write(
     sentry_json_t writer;
     sentry_json_init(&writer, buf + header_len, cap - (size_t)header_len);
     sentry_json_object_begin(&writer);
-    write_items(&writer, metrics, trace_id);
+    write_items(&writer, metrics, trace_id, now_unix_us);
     sentry_json_object_end(&writer);
     buf[header_len + payload_len] = '\n';
     buf[total] = '\0';
