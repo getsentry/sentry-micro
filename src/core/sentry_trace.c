@@ -51,8 +51,8 @@ static bool is_digit_run(const char *text, size_t count)
     return true;
 }
 
-/** `sample_rand` is always `"0."` plus exactly six digits — the wire format leaves no
- *  other value representable, so anything else is simply not one. */
+/** Per the Dynamic Sampling Context spec, `sample_rand` is always `"0."` plus exactly six
+ *  digits. */
 static bool is_well_formed_sample_rand(const char *text, size_t len)
 {
     return len == SENTRY_MICRO_SAMPLE_RAND_LEN - 1 && text[0] == '0' && text[1] == '.'
@@ -205,7 +205,6 @@ bool sentry_trace_can_continue(const char *incoming_org_id, const char *own_org_
     if (incoming_known != own_known) {
         return !strict;
     }
-    /* Neither side knows its org id — nothing to disagree about. */
     return true;
 }
 

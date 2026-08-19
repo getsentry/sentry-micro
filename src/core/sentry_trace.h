@@ -112,12 +112,9 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
  * Whether a trace carrying `incoming_org_id` is safe to join when this device's own
  * organization id is `own_org_id`.
  *
- * A device is not required to know its org id, and neither is whoever is calling it — so
- * "unknown" on either side is not, by itself, a reason to refuse. What is a reason: two
- * *different* known ids, which means the trace belongs to somebody else's organization
- * entirely and joining it would leak this device's telemetry into the wrong account.
- *
- * `strict` decides the ambiguous middle case, where exactly one side knows its id:
+ * A known mismatch is refused unconditionally: joining a trace from a different,
+ * identified organization would leak this device's telemetry into the wrong account.
+ * `strict` only decides the ambiguous case, where exactly one side has nothing to compare:
  *
  *   both known, equal    -> true, always
  *   both known, differ   -> false, always

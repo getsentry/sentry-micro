@@ -86,6 +86,10 @@ typedef struct {
      * Normally left unset: it is recovered automatically from an `o<digits>.` DSN host.
      * Set it when your ingest host carries no such prefix — self-hosted Sentry, or a
      * custom ingest domain — where it cannot be inferred. Takes precedence over the DSN.
+     *
+     * This is also what `sentry_trace_adopt()` compares an incoming `sentry-org_id` against
+     * before joining a trace — see `strict_trace_continuation` below for what happens when
+     * they disagree.
      */
     const char *org_id;
 

@@ -578,6 +578,14 @@ app has a replay running, and lands in the event's `replay` context — so the S
 links straight to the recording of the person who caused it. It is scoped to the request
 like everything else here.
 
+**A trace from a different organization is refused.** `baggage` may also carry a
+`sentry-org_id`, and `trace_adopt()` compares it against this device's own
+(`Options::org_id`) before joining — a known mismatch would mix telemetry across accounts,
+so the device becomes the head of a fresh trace instead of adopting one that isn't its own.
+Neither side has to know its org id for the request to proceed normally; set
+`Options::strict_trace_continuation` if an *unknown* id on either side should be treated as
+suspicious too.
+
 ### Surviving the crash
 
 A crash is only reported on the *next* boot, so the active trace has to outlive the panic.
@@ -589,7 +597,10 @@ trace. That is the correct answer rather than a gap.
 ### What this does not do yet
 
 Spans. The crash-to-replay link needs none of them: trace id in, trace id on the event. Spans
-for boot phases or request handling are a separate increment.
+for boot phases or request handling are a separate increment. `sentry-sample_rand` is parsed
+out of `baggage` and carried alongside the trace for the same forward-compatibility reason,
+but nothing reads it yet — a device with no spans has no sampling decision of its own to make
+with it.
 
 ## Writing a transport
 
