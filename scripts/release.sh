@@ -118,13 +118,16 @@ elif [ "$SECRETS_EXPLICIT" -eq 1 ]; then
     exit 1
 fi
 
-# DSN is required unconditionally, even with --no-upload: a build without a real one is a
-# firmware that compiles, flashes, and never reports anything, which is a worse failure
-# than refusing to build. Never echoed — only whether it is set, matching the SENSITIVE
-# convention in env_secrets.py, which reads this same variable.
-if [ -z "${SENTRY_MICRO_DSN:-}" ]; then
+# DSN is required when the firmware is actually going to run somewhere: flashing a real
+# board with a placeholder DSN is a firmware that boots, "works", and never reports
+# anything — a worse failure than refusing to flash. A build-only run has nothing that
+# will ever need to report — CI's variant-matrix check runs exactly this way, with no
+# Sentry credentials configured at all — so a placeholder DSN there is harmless, not a
+# mistake. Never echoed — only whether it is set, matching the SENSITIVE convention in
+# env_secrets.py, which reads this same variable.
+if [ "$UPLOAD_FIRMWARE" -eq 1 ] && [ -z "${SENTRY_MICRO_DSN:-}" ]; then
     cat >&2 <<EOF
-error: SENTRY_MICRO_DSN is not set.
+error: SENTRY_MICRO_DSN is not set, and --upload-firmware would flash this build.
 
 Export it yourself, or point --secrets / \$SENTRY_MICRO_SECRETS at a file — outside the
 repo, never committed — containing shell exports:
@@ -138,8 +141,9 @@ EOF
 fi
 # WiFi credentials are not required in the same way: a firmware with no WiFi configured is
 # a legitimate choice (serial-relay-only testing), not a mistake, so this warns rather than
-# blocks. A DSN with no way to reach it at all is not a decision anyone makes on purpose.
-if [ -z "${SENTRY_MICRO_WIFI_SSID:-}" ] || [ -z "${SENTRY_MICRO_WIFI_PASSWORD:-}" ]; then
+# blocks. Same UPLOAD_FIRMWARE scoping as the DSN check above, and for the same reason.
+if [ "$UPLOAD_FIRMWARE" -eq 1 ] \
+    && { [ -z "${SENTRY_MICRO_WIFI_SSID:-}" ] || [ -z "${SENTRY_MICRO_WIFI_PASSWORD:-}" ]; }; then
     echo "warning: SENTRY_MICRO_WIFI_SSID/PASSWORD not set — firmware falls back to the" >&2
     echo "         placeholder credentials in main.cpp and the serial relay transport." >&2
 fi
