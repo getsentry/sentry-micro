@@ -136,6 +136,21 @@ inline sentry_response_t transaction_finish(Transaction &txn)
     return sentry_transaction_finish(&txn);
 }
 
+/** Add to a counter. Does not send; rides the next flush. */
+inline void metric_count(const char *name, int64_t delta = 1, const char *unit = nullptr)
+{
+    sentry_metric_count(name, delta, unit);
+}
+
+/** Record the latest reading of something continuous. Does not send. */
+inline void metric_gauge(const char *name, int64_t value, const char *unit = nullptr)
+{
+    sentry_metric_gauge(name, value, unit);
+}
+
+/** Metric names dropped because the table was full. */
+inline uint32_t metrics_dropped() { return sentry_metrics_dropped_count(); }
+
 /** Captured messages dropped by the local throttle since init. */
 inline uint32_t suppressed_count() { return sentry_suppressed_count(); }
 

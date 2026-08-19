@@ -40,6 +40,14 @@ typedef struct {
     sentry_trace_context_t trace;
 
     /**
+     * Numbers accumulated between flushes. About 200 bytes, and unlike a transaction this
+     * has to live across calls — a counter that reset every time nobody was looking would
+     * count nothing.
+     */
+    sentry_metrics_t metrics;
+    uint32_t metrics_dropped;
+
+    /**
      * The trace the *previous* boot died inside, recovered from RTC memory.
      *
      * Kept apart from the active one on purpose. The app that comes to collect a crash
@@ -336,6 +344,59 @@ size_t sentry_trace_header(char *buf, size_t cap)
     return sentry_trace_header_write(buf, cap, &g_state.trace);
 }
 
+void sentry_metric_count(const char *name, int64_t delta, const char *unit)
+{
+    if (g_state.enabled && !sentry_metrics_count(&g_state.metrics, name, delta, unit)) {
+        g_state.metrics_dropped++;
+    }
+}
+
+void sentry_metric_gauge(const char *name, int64_t value, const char *unit)
+{
+    if (g_state.enabled && !sentry_metrics_gauge(&g_state.metrics, name, value, unit)) {
+        g_state.metrics_dropped++;
+    }
+}
+
+uint32_t sentry_metrics_dropped_count(void) { return g_state.metrics_dropped; }
+
+/**
+ * Send whatever has accumulated, if anything has.
+ *
+ * Called from sentry_flush() rather than from the recording calls, which is the property
+ * that makes a counter safe in a render loop: recording touches a table, and only the
+ * flush — already on an interval the firmware chose — touches the transport.
+ */
+static void flush_metrics(void)
+{
+    if (sentry_metrics_empty(&g_state.metrics)) {
+        return;
+    }
+    /* Every metric needs a trace id from the propagation context. Idle is the normal state
+     * for a device reporting heap, so one is minted for the batch when nothing is in
+     * flight: the numbers correlate with each other and claim nothing about a user action
+     * they had no part in. */
+    if (!g_state.trace.active && !sentry_trace_start()) {
+        return;
+    }
+
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t needed = sentry_metrics_envelope_write(
+        envelope, sizeof(envelope), &g_state.metrics, g_state.trace.trace_id);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        debug_log("metrics need %u bytes, envelope buffer is %u", (unsigned)needed,
+            (unsigned)sizeof(envelope));
+        return;
+    }
+
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+    /* Cleared whether or not the send succeeded, because sentry_send_envelope() has already
+     * buffered it if it was worth retrying. Keeping the table as well would double-count
+     * every value on the next flush. */
+    sentry_metrics_reset(&g_state.metrics);
+    debug_log("flushed metrics: result %d", (int)response.result);
+}
+
 bool sentry_transaction_start(sentry_transaction_t *txn, const char *name, const char *op)
 {
     if (!g_state.enabled || !txn) {
@@ -499,7 +560,15 @@ uint32_t sentry_dropped_count(void)
 
 uint32_t sentry_flush(uint32_t max_events)
 {
-    if (!g_state.enabled || !g_state.buffering || in_backoff()) {
+    if (!g_state.enabled || in_backoff()) {
+        return 0;
+    }
+    /* Before the buffered envelopes, and outside the buffering check: metrics accumulate
+     * whether or not offline buffering was ever enabled, and a device that never buffers
+     * still wants its heap reported. */
+    flush_metrics();
+
+    if (!g_state.buffering) {
         return 0;
     }
 

@@ -719,7 +719,28 @@ enriching existing traces, Application Metrics for anything that must not be sam
 
 That gap is sharper on a device than on a server. The numbers a microcontroller most wants
 to report — heap trending down over a week, RSSI, frame time — belong to no operation, and a
-span attribute needs one to hang off. Tracked in SDK-1418.
+span attribute needs one to hang off. So the SDK emits Application Metrics too:
+
+```cpp
+sentry::metric_count("ble.disconnect");                       // counter
+sentry::metric_gauge("device.free_heap", ESP.getFreeHeap(), "byte");
+sentry::metric_gauge("wifi.rssi", WiFi.RSSI());
+```
+
+**Recording does not send**, and that is the whole point on this hardware.
+`transaction_finish()` posts inline and blocks the loop task, so a path that runs several
+times a second cannot be traced at any sampling rate — but it can be counted. These add to a
+fixed table and return; the table rides the next `sentry_flush()`, on whatever interval your
+`loop()` already uses.
+
+They also need no clock. A metric carries no timestamp, so unlike a transaction these work
+on a device that has never been told the date.
+
+The table holds `SENTRY_MICRO_MAX_METRICS` (8) distinct **names** — a counter hit a thousand
+times a second is still one slot. A ninth name is dropped and counted rather than evicting
+one that is already accumulating, because a running total that silently restarts is worse
+than one that never started: only the second is visible. `sentry_metrics_dropped_count()`
+reports it.
 
 Integers only, because printf's float support is an opt-in linker flag on this target that
 firmware routinely leaves off.

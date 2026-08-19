@@ -254,3 +254,17 @@
   be sampled away. Telling an integrator that span attributes *are* the metrics story makes
   them stop looking. This SDK emits `event` and `transaction` items only; metrics are not
   implemented, and SDK-1418 now says so.
+- Application Metrics: `sentry_metric_count()` and `sentry_metric_gauge()`, emitted as a
+  `trace_metric` envelope item. Recording adds to a fixed table and returns — it does not
+  send — and the table rides the next `sentry_flush()`. That is the property that matters
+  here: `transaction_finish()` posts inline and blocks the loop task, so a path running
+  several times a second cannot be traced at any sampling rate, but it can be counted. This
+  makes the hot path measurable for the first time.
+- Metrics need no clock, unlike transactions and logs: the payload carries no timestamp, so
+  they work on a device that has never been told the date. They do need a trace id, which is
+  resolved at flush — minted for the batch when nothing is in flight, since idle is the normal
+  state for a device reporting heap.
+- The metric table bounds distinct *names*, not calls, at `SENTRY_MICRO_MAX_METRICS` (8). A
+  name that does not fit is dropped and counted rather than evicting one already
+  accumulating, because a running total that silently restarts is worse than one that never
+  started. `sentry_metrics_dropped_count()` reports it.

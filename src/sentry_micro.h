@@ -36,6 +36,7 @@
 #include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
+#include "core/sentry_metrics.h"
 #include "core/sentry_span.h"
 #include "core/sentry_throttle.h"
 #include "core/sentry_trace.h"
@@ -392,6 +393,43 @@ void sentry_span_set_attribute(sentry_span_t *span, const char *key, int64_t val
  * Uses `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` of the caller's stack on top of `txn` itself.
  */
 sentry_response_t sentry_transaction_finish(sentry_transaction_t *txn);
+
+/**
+ * Add to a counter — brownouts, BLE disconnects, OTA failures.
+ *
+ *     sentry_metric_count("ble.disconnect", 1, NULL);
+ *
+ * **This does not send.** It adds to a fixed table and returns, and the table rides the next
+ * `sentry_flush()`. That is the difference that matters on this hardware: a transaction
+ * posts inline and blocks the loop task, so a path running several times a second cannot be
+ * traced at any sampling rate — but it can be counted.
+ *
+ * `name` and `unit` are not copied; pass literals. Values are integers, because printf's
+ * float support is an opt-in linker flag here and everything worth counting is whole.
+ *
+ * Needs no clock: a metric carries no timestamp, so unlike a transaction this works on a
+ * device that has never been told the date.
+ */
+void sentry_metric_count(const char *name, int64_t delta, const char *unit);
+
+/**
+ * Record the latest reading of something continuous — free heap, RSSI, frame time.
+ *
+ *     sentry_metric_gauge("device.free_heap", ESP.getFreeHeap(), "byte");
+ *
+ * Same table and same no-send guarantee as `sentry_metric_count()`. The newest value wins;
+ * a gauge is a sample rather than a history.
+ */
+void sentry_metric_gauge(const char *name, int64_t value, const char *unit);
+
+/**
+ * Distinct metric names dropped because the table was full, since `sentry_init()`.
+ *
+ * The table bounds *names*, not calls, so this only moves when firmware uses more than
+ * `SENTRY_MICRO_MAX_METRICS` of them. Non-zero means a number you asked for is missing
+ * entirely rather than merely coarse.
+ */
+uint32_t sentry_metrics_dropped_count(void);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.
