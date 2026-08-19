@@ -188,11 +188,8 @@
   release argument at all. JavaScript source maps *are* release-scoped, which is where the
   assumption comes from. Reported by the first external integrator, who had architected
   around the constraint because the header stated it as the field's contract.
-- `scripts/debug_paths.py`: an opt-in PlatformIO pre-script that rewrites the build machine's
-  absolute paths in the debug info to a placeholder rooted at the repository name, so a stack
-  frame can be matched against a file in a commit from any machine, and no home directory
-  ends up in a public firmware's debug files. Off by default, and the header explains why:
-  `sentry-cli --include-sources` locates sources by the paths in the debug info, so a
-  placeholder prefix costs the line of code shown beside each frame — measured going from
-  "Resolved source code for 1 debug information file" to 0. For most projects a single code
-  mapping on the CI path is the better trade, and the README now says so.
+- Suspect commits need one code mapping in Sentry, from the CI build path to the repository
+  root, because the compiler records absolute build paths that match nothing in a repo. A
+  build-side alternative (`-ffile-prefix-map`) was tried and dropped: it makes paths machine
+  independent but `sentry-cli --include-sources` then cannot find the sources, taking the
+  line of code beside each frame with it — measured, 1 debug file resolved to 0.

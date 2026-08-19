@@ -499,22 +499,14 @@ refuses to ship if it never settles.
 
 ### Suspect commits: one code mapping
 
-Associating commits (above) puts the commit list on the release. Getting Sentry to point at
-the *likely* commit needs one more thing: the file paths in a stack frame have to line up
-with paths in the repository, and the compiler records the build machine's absolute paths —
+Associating commits puts the commit list on the release. For Sentry to point at the
+*likely* commit, the file paths in a stack frame have to line up with paths in the
+repository — and the compiler records the build machine's absolute paths, e.g.
 `/home/runner/work/chromabay/chromabay/firmware/src/main.cpp`.
 
-Add a **code mapping** in Sentry (Settings → Integrations → your repo) from that prefix to
-the repository root. In CI the prefix is stable for a given repository, so one mapping
-covers every release built there.
-
-`scripts/debug_paths.py` is the alternative: a PlatformIO pre-script that rewrites the
-prefix at compile time so paths are machine independent, which also covers locally built
-releases and keeps the builder's home directory out of public debug files. It is **off by
-default**, because a placeholder prefix does not exist on disk and `sentry-cli
---include-sources` then cannot find the sources — the frames still resolve to function,
-file and line, but the issue page loses the line of code beside each frame. Measured, not
-assumed. Its header documents both routes.
+Add a code mapping in Sentry (Settings → Integrations → your repo) from that prefix to the
+repository root. A CI path is stable for a given repository, so one mapping covers every
+release built there. This is a Sentry settings change, not a build change.
 
 Each build variant gets its own id, derived from `release + env`. That is required, not
 cosmetic: every board in a matrix is a distinct binary, and resolving addresses against the
