@@ -55,6 +55,17 @@ typedef struct {
      */
     char replay_id[SENTRY_MICRO_TRACE_ID_LEN];
 
+    /**
+     * The caller's organization id, from the `sentry-org_id` baggage key. Empty when
+     * absent.
+     *
+     * Not attached to anything by itself — it exists so `sentry_trace_can_continue()` can
+     * refuse to join a trace that belongs to a different org. A device with no org_id of
+     * its own, or a caller that sent none, is not a mismatch; two different digit strings
+     * are.
+     */
+    char org_id[SENTRY_MICRO_MAX_ORG_ID_LEN];
+
     /** The upstream sampling decision. Honour it; do not make one up. */
     bool sampled;
     /** False when the header deferred the decision, i.e. carried no third field. */

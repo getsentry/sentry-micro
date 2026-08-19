@@ -151,6 +151,33 @@ static void test_no_replay_id_is_ordinary(void)
     TEST_ASSERT_EQUAL_STRING("", ctx.replay_id);
 }
 
+static void test_picks_the_org_id_out_of_baggage(void)
+{
+    sentry_trace_context_t ctx;
+    const char *baggage = "sentry-environment=production,sentry-org_id=1234";
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(&ctx, TRACE "-" PARENT "-1", baggage, SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("1234", ctx.org_id);
+}
+
+static void test_a_non_digit_org_id_does_not_cost_the_trace(void)
+{
+    sentry_trace_context_t ctx;
+    /* Same rule as a garbled replay_id: the org id is a bonus for a later comparison, not
+     * a reason to lose the trace it arrived on. */
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-org_id=not-a-number", SPAN_BYTES));
+    TEST_ASSERT_TRUE(ctx.active);
+    TEST_ASSERT_EQUAL_STRING("", ctx.org_id);
+}
+
+static void test_no_org_id_is_ordinary(void)
+{
+    sentry_trace_context_t ctx;
+    TEST_ASSERT_TRUE(sentry_trace_adopt_header(
+        &ctx, TRACE "-" PARENT "-1", "sentry-replay_id=" REPLAY, SPAN_BYTES));
+    TEST_ASSERT_EQUAL_STRING("", ctx.org_id);
+}
+
 static void test_does_not_confuse_a_key_that_merely_ends_the_same(void)
 {
     sentry_trace_context_t ctx;
@@ -175,7 +202,7 @@ static void test_clearing_leaves_nothing_behind(void)
 {
     sentry_trace_context_t ctx;
     TEST_ASSERT_TRUE(sentry_trace_adopt_header(
-        &ctx, TRACE "-" PARENT "-1", "sentry-replay_id=" REPLAY, SPAN_BYTES));
+        &ctx, TRACE "-" PARENT "-1", "sentry-replay_id=" REPLAY ",sentry-org_id=1234", SPAN_BYTES));
 
     sentry_trace_clear(&ctx);
 
@@ -183,6 +210,7 @@ static void test_clearing_leaves_nothing_behind(void)
     TEST_ASSERT_FALSE(ctx.active);
     TEST_ASSERT_EQUAL_STRING("", ctx.trace_id);
     TEST_ASSERT_EQUAL_STRING("", ctx.replay_id);
+    TEST_ASSERT_EQUAL_STRING("", ctx.org_id);
 }
 
 static void test_writes_a_header_for_an_outbound_call(void)
@@ -243,6 +271,9 @@ int main(void)
     RUN_TEST(test_tolerates_baggage_whitespace_and_position);
     RUN_TEST(test_a_bad_replay_id_does_not_cost_the_trace);
     RUN_TEST(test_no_replay_id_is_ordinary);
+    RUN_TEST(test_picks_the_org_id_out_of_baggage);
+    RUN_TEST(test_a_non_digit_org_id_does_not_cost_the_trace);
+    RUN_TEST(test_no_org_id_is_ordinary);
     RUN_TEST(test_does_not_confuse_a_key_that_merely_ends_the_same);
     RUN_TEST(test_begins_a_device_originated_trace);
     RUN_TEST(test_clearing_leaves_nothing_behind);
