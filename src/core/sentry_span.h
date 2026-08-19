@@ -7,9 +7,12 @@
  * view only when it fails.
  *
  * A transaction fixes that: one unit of work, with child spans for its phases, carrying
- * real durations. It is also where metrics live — the standalone metrics API is gone and
- * numeric attributes on spans are the current path — so this is the thing everything else
- * hangs off.
+ * real durations, and numeric attributes that enrich the trace.
+ *
+ * Those attributes are *not* Sentry's Application Metrics, which are a separate product on
+ * a separate envelope item and are unaffected by trace sampling. A span attribute needs an
+ * operation to hang off, and the numbers a device most wants to report — heap over time,
+ * RSSI, frame time — belong to no operation at all.
  *
  * **Scoped to app-initiated operations, deliberately.** A boot transaction would start
  * before anything has told the device what time it is, and on a BLE-only device that may

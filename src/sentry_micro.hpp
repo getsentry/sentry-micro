@@ -124,7 +124,7 @@ inline sentry_span_t *start_child(
 /** Close a span. Safe with nullptr. */
 inline void span_finish(sentry_span_t *span) { sentry_span_finish(span); }
 
-/** Attach a number to a span — this is what metrics are now. */
+/** Attach a number to a span. Not Application Metrics; see the C header. */
 inline void span_set_attribute(sentry_span_t *span, const char *key, int64_t value)
 {
     sentry_span_set_attribute(span, key, value);

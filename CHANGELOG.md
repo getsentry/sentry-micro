@@ -217,8 +217,7 @@
   `sentry_span_end()` / `sentry_transaction_end()`, emitted as a `transaction` envelope item
   on the trace the device already joined. The device stops being an error hanging off someone
   else's trace and becomes a participant with real durations.
-- `sentry_span_set_measurement()` is how metrics are reported now that the standalone metrics
-  API is gone — Sentry aggregates numeric span attributes. Integers only: printf's float
+- `sentry_span_set_measurement()` attaches numbers to a span, enriching the trace. Integers only: printf's float
   support is an opt-in linker flag on this target, and a `%f` in a build without it prints
   nothing at all, which would silently malform the JSON.
 - Span durations come from the monotonic clock, so they are correct even when the wall clock
@@ -246,3 +245,12 @@
   Sentry's separate "measurements" concept while actually setting an attribute. Ownership
   still differs deliberately — sentry-native hands back heap-managed handles and this SDK
   does not allocate.
+- Corrected a wrong claim this SDK made in four places, including a public header: that
+  Sentry's standalone metrics API "was withdrawn" and span attributes are what metrics are
+  now. Application Metrics exist — `count` / `gauge` / `distribution`, JS SDKs 10.25.0 and
+  above, their own `trace_metric` envelope item and their own explorer — and Sentry's own
+  guidance separates them from span attributes explicitly: span metrics enrich existing
+  traces and are subject to trace sampling, Application Metrics are for values that must not
+  be sampled away. Telling an integrator that span attributes *are* the metrics story makes
+  them stop looking. This SDK emits `event` and `transaction` items only; metrics are not
+  implemented, and SDK-1418 now says so.

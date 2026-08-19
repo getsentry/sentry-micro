@@ -482,8 +482,9 @@ static void write_transaction(
         sentry_json_kv_micros(writer, "start_timestamp", span_start);
         sentry_json_kv_micros(writer, "timestamp", span_end);
         if (span->attr_count > 0) {
-            /* Numeric attributes are how metrics are reported now that the standalone
-             * metrics API is gone; `data` is where Sentry aggregates them from. */
+            /* `data` is where Sentry reads a span's numeric attributes from. These enrich
+             * the trace and are sampled with it; Application Metrics are a separate item
+             * type this SDK does not emit. */
             sentry_json_key(writer, "data");
             sentry_json_object_begin(writer);
             for (uint8_t a = 0; a < span->attr_count; a++) {

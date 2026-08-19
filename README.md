@@ -711,9 +711,18 @@ is a no-op, so firmware never has to check. Dropped spans are counted and tagged
 `spans_dropped:true` — a trace quietly missing spans reads as a complete picture of a
 simpler operation than the one that ran.
 
-`span_set_attribute()` **is** metrics now. The standalone metrics API was withdrawn; Sentry
-aggregates numeric span attributes instead. Integers only, because printf's float support is
-an opt-in linker flag on this target that firmware routinely leaves off.
+`span_set_attribute()` enriches the trace with numbers — and is **not** the same thing as
+Sentry's Application Metrics. Those are a separate product (`count` / `gauge` /
+`distribution`, their own envelope item, their own explorer), independent of trace sampling,
+and **this SDK does not implement them yet**. Sentry's guidance: span attributes for
+enriching existing traces, Application Metrics for anything that must not be sampled away.
+
+That gap is sharper on a device than on a server. The numbers a microcontroller most wants
+to report — heap trending down over a week, RSSI, frame time — belong to no operation, and a
+span attribute needs one to hang off. Tracked in SDK-1418.
+
+Integers only, because printf's float support is an opt-in linker flag on this target that
+firmware routinely leaves off.
 
 ### What it costs
 

@@ -366,9 +366,18 @@ void sentry_span_finish(sentry_span_t *span);
 /**
  * Attach a number to a span — free heap, RSSI, frame time in microseconds, millivolts.
  *
- * This is what "metrics" are now: the standalone metrics API was withdrawn, and Sentry
- * aggregates numeric span attributes instead. Integer because everything worth measuring
- * on a device is one, and because printf's float support is an opt-in linker flag here.
+ * Enriches this trace with numbers. Note what it is *not*: Sentry's Application Metrics
+ * (`count` / `gauge` / `distribution`) are a separate product on a separate envelope item,
+ * independent of tracing, and this SDK does not implement them. Sentry's own guidance is
+ * that span attributes are for enriching existing traces and are subject to trace
+ * sampling, while metrics that must not be sampled away belong in Application Metrics.
+ *
+ * That distinction matters more here than on a server: the numbers a device most wants to
+ * report — heap over time, RSSI, frame time — belong to no operation, and a span needs one
+ * to hang off.
+ *
+ * Integer because everything worth measuring on a device is one, and because printf's
+ * float support is an opt-in linker flag here.
  */
 void sentry_span_set_attribute(sentry_span_t *span, const char *key, int64_t value);
 
