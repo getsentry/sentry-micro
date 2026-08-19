@@ -38,6 +38,17 @@ typedef struct {
 
     /** The operation currently being served, if any. See core/sentry_trace.h. */
     sentry_trace_context_t trace;
+
+    /**
+     * The trace the *previous* boot died inside, recovered from RTC memory.
+     *
+     * Kept apart from the active one on purpose. The app that comes to collect a crash
+     * report connects and immediately offers a new trace, so if the two shared a slot the
+     * panic would be attached to the connection that came to fetch it — a wrong link that
+     * renders identically to a right one. Separating them makes the ordering of "adopt"
+     * and "report the last boot" stop mattering, which is better than documenting it.
+     */
+    sentry_trace_context_t crash_trace;
 } sentry_state_t;
 
 static sentry_state_t g_state;
@@ -129,8 +140,15 @@ bool sentry_init(const sentry_options_t *options)
     sentry_device_info_get(&g_state.device);
     /* Recovered before anything can raise an event, so a crash report built moments from
      * now still carries the trace the device died inside. Empty unless the last boot ended
-     * in a panic while serving a request. */
-    sentry_device_trace_recover(&g_state.trace, sizeof(g_state.trace));
+     * in a panic while serving a request.
+     *
+     * Then the persisted slot is cleared, because nothing is in flight yet on this boot.
+     * Leaving the old value there would mean a later, unrelated panic — on a boot where
+     * nobody ever adopted a trace — recovers the previous crash's trace and claims the two
+     * are the same incident. */
+    sentry_device_trace_recover(&g_state.crash_trace, sizeof(g_state.crash_trace));
+    sentry_trace_clear(&g_state.trace);
+    sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
     sentry_throttle_init(
         &g_state.throttle, options->max_messages_per_minute, options->message_repeat_window_ms);
     g_state.enabled = true;
@@ -447,6 +465,10 @@ bool sentry_event_attach_coredump(sentry_event_t *event, sentry_coredump_t *stor
 
     event->coredump = storage;
     event->level = SENTRY_LEVEL_FATAL;
+    /* The crash belongs to the trace it died inside, never to whatever is being served
+     * now — overriding what sentry_event_prepare() set. NULL when the previous boot was
+     * not serving anything, which is the honest answer rather than a gap. */
+    event->trace = g_state.crash_trace.active ? &g_state.crash_trace : NULL;
 
     debug_log("crash recovered: %s in %s, %u frames%s", storage->exception_type, storage->task_name,
         (unsigned)storage->frame_count, storage->truncated ? " (truncated)" : "");

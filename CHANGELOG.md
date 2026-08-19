@@ -171,3 +171,13 @@
   context. Not consumed yet — there is nothing here to sample without spans — but captured
   now so a later increment does not have to revisit where the Dynamic Sampling Context comes
   from.
+- A crash recovered from the previous boot keeps the trace it died inside, even when a new
+  trace is adopted first. The app that comes to collect a crash report connects and offers a
+  new trace in the same breath, so sharing one slot meant the panic was attached to the
+  connection that came to fetch it — a wrong link that renders identically to a right one.
+  The recovered trace now lives apart from the active one and `sentry_event_attach_coredump()`
+  uses it, so the ordering of "adopt" and "report the last boot" stops mattering. Found by
+  the first real integration, not in review.
+- The persisted trace slot is cleared at `sentry_init()` once recovered, so a later panic on
+  a boot where nothing was ever adopted no longer resurrects the previous crash's trace and
+  claims the two are the same incident.

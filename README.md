@@ -593,6 +593,17 @@ Neither side has to know its org id for the request to proceed normally; set
 `Options::strict_trace_continuation` if an *unknown* id on either side should be treated as
 suspicious too.
 
+**Adopting does not disturb a recovered crash.** The app that comes to collect a crash
+report usually connects and offers a new trace in the same breath, so the trace the device
+*died* inside is kept apart from the one it is serving *now* — reporting the last boot
+before or after `trace_adopt()` gives the same answer. Found by the first integration
+rather than in review, and fixed in the SDK instead of written down as an ordering rule.
+
+If one trace covers a whole connection rather than one command, note that a Sentry replay
+ends after 60 minutes, or 15 minutes without a click or navigation. A `replay_id` held past
+that still links, but it names the session that *was* recording rather than the interaction
+at hand.
+
 ### Surviving the crash
 
 A crash is only reported on the *next* boot, so the active trace has to outlive the panic.

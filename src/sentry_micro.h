@@ -274,6 +274,18 @@ bool sentry_event_prepare(sentry_event_t *event, char *event_id_buf);
  * **Release it when the operation finishes.** A device that holds the last trace it saw
  * will attach an unrelated panic hours later to that interaction, which reads as a real
  * causal link and is not one.
+ *
+ * Adopting does **not** disturb a crash recovered from the previous boot. The app that
+ * comes to collect a crash report typically connects and offers a new trace in the same
+ * breath, so the two are deliberately kept apart: `sentry_event_attach_coredump()` uses the
+ * trace the device died inside, whatever is being served now. Reporting the last boot
+ * before or after adopting therefore gives the same answer.
+ *
+ * One thing worth knowing if a single trace covers a long-lived connection rather than one
+ * command: a Sentry replay ends after 60 minutes, or 15 minutes without a click or
+ * navigation. A `replay_id` held past that still links — replays are stored — but it names
+ * the session that *was* recording, not the interaction at hand. Re-adopting with a fresh
+ * pair when the app's replay rotates keeps the link precise.
  */
 bool sentry_trace_adopt(const char *sentry_trace, const char *baggage);
 
