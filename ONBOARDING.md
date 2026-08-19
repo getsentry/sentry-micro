@@ -42,6 +42,28 @@ export SENTRY_MICRO_WIFI_PASSWORD='...'
 pio run -e esp32dev -t upload
 ```
 
+Re-exporting these every session gets old fast, and doing it in one shell and building in
+another is a real trap: exported variables do not survive into a separate command, so a
+later build silently falls back to the placeholder DSN and WiFi credentials in `main.cpp` —
+with a clean exit code and no visible error. `scripts/release.sh` (below) will source a
+persistent file for you instead, checked for at `~/.config/sentry-micro/env` by default —
+same `~/.config/<tool>/` convention as `sentry-devenv`'s `config.ini`, just a plain
+shell-export file rather than ini, since all this needs is to be `source`d:
+
+```bash
+mkdir -p ~/.config/sentry-micro
+cat > ~/.config/sentry-micro/env <<'EOF'
+export SENTRY_MICRO_DSN='https://<key>@o<org>.ingest.<region>.sentry.io/<project>'
+export SENTRY_MICRO_WIFI_SSID='...'
+export SENTRY_MICRO_WIFI_PASSWORD='...'
+export SENTRY_AUTH_TOKEN='...'          # or skip this and run 'sentry-cli login' instead
+EOF
+```
+
+`scripts/release.sh` tries that path automatically; point it elsewhere with `--secrets PATH`
+or `$SENTRY_MICRO_SECRETS`. CI has no such file and injects the same variables directly, which
+this does not disturb — the file is tried, never required, unless asked for explicitly.
+
 **No 2.4 GHz network?** Use the serial relay — your laptop performs the HTTP request on the
 device's behalf. This is also the fastest way to see exactly what the device is sending:
 
@@ -55,13 +77,21 @@ scripts/serial_relay.py --port /dev/cu.usbserial-XXXX     # replaces `pio device
 scripts/release.sh -e esp32dev -r 'my-firmware@0.1.0'     # build, stamp, upload debug files
 ```
 
-Needs `SENTRY_AUTH_TOKEN` (an **organization** auth token, scope `org:ci`). Org and project
-are read out of the DSN. Then flash a build with the deliberate crash enabled:
+Needs `SENTRY_AUTH_TOKEN` (an **organization** auth token, scope `org:ci`) — set directly,
+in the secrets file above, or via `sentry-cli login`. Org and project are read out of the
+DSN. `release.sh` checks all of this upfront and refuses to build rather than produce a
+firmware carrying a placeholder DSN. Then build, upload, and flash a build with the
+deliberate crash enabled, all as one command:
 
 ```bash
-PLATFORMIO_BUILD_FLAGS='-D SENTRY_DEMO_CRASH=1' scripts/release.sh -e esp32dev -r 'demo@0.1.0'
-# then flash it, exporting the SENTRY_MICRO_* values release.sh printed
+PLATFORMIO_BUILD_FLAGS='-D SENTRY_DEMO_CRASH=1' \
+    scripts/release.sh -e esp32dev -r 'demo@0.1.0' --upload-firmware
 ```
+
+`--upload-firmware` flashes in the same process that built and stamped the ELF, rather than
+a separate command that would need the same environment re-created by hand. Port selection
+is left entirely to PlatformIO; if it cannot find your board on its own, set
+`PLATFORMIO_UPLOAD_PORT` yourself, or `upload_port` in `platformio.ini`.
 
 The board crashes once per power-on, reboots, reports the crash on the next boot, and erases
 the core dump once it is delivered.
