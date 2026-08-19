@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h> /* gettimeofday */
 #include <time.h>
 
 #include "esp_attr.h" /* RTC_NOINIT_ATTR */
@@ -140,6 +141,13 @@ bool sentry_device_random(uint8_t *out, size_t len)
     return true;
 }
 
+uint64_t sentry_device_uptime_us(void)
+{
+    /* esp_timer counts microseconds natively, so this is the raw value the millisecond
+     * reading above is derived from rather than a scaled-up approximation. */
+    return (uint64_t)esp_timer_get_time();
+}
+
 uint64_t sentry_device_unix_time(void)
 {
     time_t now = time(NULL);
@@ -152,6 +160,18 @@ uint64_t sentry_device_unix_time(void)
         return 0;
     }
     return (uint64_t)now;
+}
+
+uint64_t sentry_device_unix_time_us(void)
+{
+    /* gettimeofday() rather than time(): same clock, microsecond resolution. The guard
+     * below is the same one, applied to the same threshold, so the two cannot disagree
+     * about whether the clock is trustworthy. */
+    struct timeval now;
+    if (gettimeofday(&now, NULL) != 0 || (uint64_t)now.tv_sec < 1600000000ULL) {
+        return 0;
+    }
+    return (uint64_t)now.tv_sec * 1000000ULL + (uint64_t)now.tv_usec;
 }
 
 /*

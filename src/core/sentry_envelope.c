@@ -412,6 +412,143 @@ size_t sentry_event_write(char *buf, size_t cap, const sentry_event_t *event)
     return writer.len;
 }
 
+/** Write the transaction document into `writer`, which may be in counting mode. */
+static void write_transaction(
+    sentry_json_t *writer, const sentry_transaction_t *txn, const sentry_transaction_meta_t *meta)
+{
+    uint64_t start_us = sentry_transaction_start_unix_us(txn);
+
+    sentry_json_object_begin(writer);
+    sentry_json_kv_string(writer, "event_id", meta->event_id);
+    /* What makes this a transaction rather than an error; everything else is shared. */
+    sentry_json_kv_string(writer, "type", "transaction");
+    sentry_json_kv_string(writer, "platform", "native");
+    sentry_json_kv_string(writer, "transaction", txn->name ? txn->name : "operation");
+    sentry_json_kv_micros(writer, "start_timestamp", start_us);
+    sentry_json_kv_micros(writer, "timestamp", txn->end_unix_us);
+    sentry_json_kv_string_opt(writer, "release", meta->release);
+    sentry_json_kv_string_opt(writer, "environment", meta->environment);
+
+    sentry_json_key(writer, "sdk");
+    sentry_json_object_begin(writer);
+    sentry_json_kv_string(writer, "name", SENTRY_MICRO_SDK_NAME);
+    sentry_json_kv_string(writer, "version", SENTRY_MICRO_SDK_VERSION);
+    sentry_json_object_end(writer);
+
+    sentry_json_key(writer, "tags");
+    sentry_json_object_begin(writer);
+    if (meta->device) {
+        sentry_json_kv_string_opt(writer, "chip", meta->device->chip_model);
+        sentry_json_kv_string_opt(writer, "device_id", meta->device->device_id);
+    }
+    sentry_json_kv_string_opt(writer, "board", meta->board);
+    if (txn->dropped_spans > 0) {
+        /* Surfaced as a tag so a truncated trace can be *found*, not just noticed by
+         * someone who happens to open it. A trace that quietly lost spans looks like a
+         * complete picture of a simpler operation than the one that ran. */
+        sentry_json_kv_string(writer, "spans_dropped", "true");
+    }
+    sentry_json_object_end(writer);
+
+    sentry_json_key(writer, "contexts");
+    sentry_json_object_begin(writer);
+    sentry_json_key(writer, "trace");
+    sentry_json_object_begin(writer);
+    sentry_json_kv_string(writer, "type", "trace");
+    sentry_json_kv_string(writer, "trace_id", txn->trace.trace_id);
+    sentry_json_kv_string(writer, "span_id", txn->trace.span_id);
+    if (txn->trace.parent_span_id[0]) {
+        sentry_json_kv_string(writer, "parent_span_id", txn->trace.parent_span_id);
+    }
+    sentry_json_kv_string_opt(writer, "op", txn->op);
+    sentry_json_object_end(writer);
+    sentry_json_object_end(writer);
+
+    sentry_json_key(writer, "spans");
+    sentry_json_array_begin(writer);
+    for (uint8_t i = 0; i < txn->span_count; i++) {
+        const sentry_span_t *span = &txn->spans[i];
+        uint64_t span_start = start_us + (span->start_uptime_us - txn->start_uptime_us);
+        uint64_t span_end = start_us + (span->end_uptime_us - txn->start_uptime_us);
+
+        sentry_json_object_begin(writer);
+        sentry_json_kv_string(writer, "span_id", span->span_id);
+        /* Every span's parent is the transaction. A device operation is a flat list of
+         * phases, and inventing a hierarchy the caller did not express would be fiction. */
+        sentry_json_kv_string(writer, "parent_span_id", txn->trace.span_id);
+        sentry_json_kv_string(writer, "trace_id", txn->trace.trace_id);
+        sentry_json_kv_string_opt(writer, "op", span->op);
+        sentry_json_kv_string_opt(writer, "description", span->description);
+        sentry_json_kv_micros(writer, "start_timestamp", span_start);
+        sentry_json_kv_micros(writer, "timestamp", span_end);
+        if (span->attr_count > 0) {
+            /* Numeric attributes are how metrics are reported now that the standalone
+             * metrics API is gone; `data` is where Sentry aggregates them from. */
+            sentry_json_key(writer, "data");
+            sentry_json_object_begin(writer);
+            for (uint8_t a = 0; a < span->attr_count; a++) {
+                sentry_json_key(writer, span->attrs[a].key);
+                sentry_json_int(writer, span->attrs[a].value);
+            }
+            sentry_json_object_end(writer);
+        }
+        sentry_json_object_end(writer);
+    }
+    sentry_json_array_end(writer);
+
+    sentry_json_object_end(writer);
+}
+
+static size_t transaction_write(
+    char *buf, size_t cap, const sentry_transaction_t *txn, const sentry_transaction_meta_t *meta)
+{
+    sentry_json_t writer;
+    sentry_json_init(&writer, buf, cap);
+    write_transaction(&writer, txn, meta);
+    if (buf && writer.overflow) {
+        /* Never hand back a truncated document that looks like JSON. */
+        buf[0] = '\0';
+    }
+    return writer.len;
+}
+
+size_t sentry_transaction_envelope_write(
+    char *buf, size_t cap, const sentry_transaction_t *txn, const sentry_transaction_meta_t *meta)
+{
+    if (buf && cap > 0) {
+        buf[0] = '\0';
+    }
+    /* No anchor means no honest timestamps; see sentry_transaction_end_at(). */
+    if (!txn || !meta || !meta->event_id || txn->end_unix_us == 0
+        || sentry_transaction_start_unix_us(txn) == 0) {
+        return 0;
+    }
+
+    size_t payload_len = transaction_write(NULL, 0, txn, meta);
+
+    char header[128];
+    int header_len = snprintf(header, sizeof(header),
+        "{\"event_id\":\"%s\"}\n{\"type\":\"transaction\",\"length\":%u}\n", meta->event_id,
+        (unsigned)payload_len);
+    if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
+        return 0;
+    }
+
+    size_t total = (size_t)header_len + payload_len + 1;
+    if (!buf) {
+        return total;
+    }
+    if (total + 1 > cap) {
+        buf[0] = '\0';
+        return total;
+    }
+    memcpy(buf, header, (size_t)header_len);
+    transaction_write(buf + header_len, cap - (size_t)header_len, txn, meta);
+    buf[header_len + payload_len] = '\n';
+    buf[total] = '\0';
+    return total;
+}
+
 size_t sentry_envelope_write(char *buf, size_t cap, const sentry_event_t *event)
 {
     if (!event || !event->event_id) {

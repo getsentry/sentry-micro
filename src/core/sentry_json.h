@@ -68,6 +68,19 @@ void sentry_json_kv_bool(sentry_json_t *writer, const char *key, bool value);
  */
 void sentry_json_kv_string_opt(sentry_json_t *writer, const char *key, const char *value);
 
+/**
+ * Key + a microsecond count written as decimal seconds, e.g. `1755640000.123456`.
+ *
+ * Transactions need this and events do not: an event's timestamp is a moment, while the
+ * difference between a transaction's two timestamps *is* the measurement, so whole seconds
+ * would make most spans on a device zero-length.
+ *
+ * Formatted from integers rather than a double, because printf's float support is an opt-in
+ * linker flag on this target and firmware routinely leaves it off — a `%f` here would
+ * print nothing at all on those builds, and the JSON would be silently malformed.
+ */
+void sentry_json_kv_micros(sentry_json_t *writer, const char *key, uint64_t micros);
+
 /** True while the document is complete and well-formed. */
 bool sentry_json_ok(const sentry_json_t *writer);
 

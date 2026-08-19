@@ -39,6 +39,9 @@ typedef struct {
     /** The operation currently being served, if any. See core/sentry_trace.h. */
     sentry_trace_context_t trace;
 
+    /** At most one in flight. Transactions do not nest on a device this small. */
+    sentry_transaction_t transaction;
+
     /**
      * The trace the *previous* boot died inside, recovered from RTC memory.
      *
@@ -334,6 +337,97 @@ const sentry_trace_context_t *sentry_trace_current(void) { return &g_state.trace
 size_t sentry_trace_header(char *buf, size_t cap)
 {
     return sentry_trace_header_write(buf, cap, &g_state.trace);
+}
+
+bool sentry_transaction_start(const char *name, const char *op)
+{
+    if (!g_state.enabled || g_state.transaction.active) {
+        return false;
+    }
+    /* An operation still needs a trace when nobody handed us one — it is a real unit of
+     * work either way, and this device becomes its head. */
+    if (!g_state.trace.active && !sentry_trace_start()) {
+        return false;
+    }
+    /* An explicit "no" upstream is honoured rather than overridden. A deferred decision
+     * (no third field in the header) is not a no. */
+    if (g_state.trace.has_sampling_decision && !g_state.trace.sampled) {
+        return false;
+    }
+
+    sentry_transaction_begin(
+        &g_state.transaction, &g_state.trace, name, op, sentry_device_uptime_us());
+    debug_log(
+        "transaction %s began on trace %s", name ? name : "operation", g_state.trace.trace_id);
+    return true;
+}
+
+sentry_span_t *sentry_span_begin(const char *op, const char *description)
+{
+    if (!g_state.enabled || !g_state.transaction.active) {
+        return NULL;
+    }
+    uint8_t span_bytes[8];
+    if (!sentry_device_random(span_bytes, sizeof(span_bytes))) {
+        return NULL;
+    }
+    return sentry_span_open(
+        &g_state.transaction, op, description, span_bytes, sentry_device_uptime_us());
+}
+
+void sentry_span_end(sentry_span_t *span) { sentry_span_close(span, sentry_device_uptime_us()); }
+
+void sentry_span_set_measurement(sentry_span_t *span, const char *key, int64_t value)
+{
+    sentry_span_set_number(span, key, value);
+}
+
+sentry_response_t sentry_transaction_end(void)
+{
+    if (!g_state.enabled || !g_state.transaction.active) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+
+    bool anchored = sentry_transaction_end_at(
+        &g_state.transaction, sentry_device_uptime_us(), sentry_device_unix_time_us());
+    if (!anchored) {
+        /* No clock, so no honest duration. Dropped rather than sent at the epoch, and said
+         * out loud because the alternative is a trace nobody can explain. Setting the clock
+         * is the application's job — see sentry_device_unix_time_us(). */
+        debug_log("dropped a transaction: the device has no clock to date it by");
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+
+    char event_id[SENTRY_MICRO_EVENT_ID_LEN];
+    uint8_t random_bytes[16];
+    if (!sentry_device_random(random_bytes, sizeof(random_bytes))) {
+        return sentry_response_make(SENTRY_SEND_UNAVAILABLE);
+    }
+    sentry_event_id_format(event_id, random_bytes);
+
+    sentry_transaction_meta_t meta;
+    meta.event_id = event_id;
+    meta.release = g_state.options.release;
+    meta.environment = g_state.options.environment;
+    meta.board = g_state.options.board;
+    meta.device = &g_state.device;
+
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t needed = sentry_transaction_envelope_write(
+        envelope, sizeof(envelope), &g_state.transaction, &meta);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        /* Raising SENTRY_MICRO_ENVELOPE_BUFFER_BYTES or lowering SENTRY_MICRO_MAX_SPANS is
+         * the fix; truncating would produce a trace that looks complete and is not. */
+        debug_log("transaction needs %u bytes, envelope buffer is %u", (unsigned)needed,
+            (unsigned)sizeof(envelope));
+        return sentry_response_make(SENTRY_SEND_REJECTED);
+    }
+
+    if (g_state.transaction.dropped_spans > 0) {
+        debug_log("transaction dropped %u span(s); raise SENTRY_MICRO_MAX_SPANS",
+            (unsigned)g_state.transaction.dropped_spans);
+    }
+    return sentry_send_envelope((const uint8_t *)envelope, needed);
 }
 
 sentry_response_t sentry_capture_message(sentry_level_t level, const char *message)

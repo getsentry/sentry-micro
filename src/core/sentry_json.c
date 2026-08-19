@@ -202,4 +202,21 @@ void sentry_json_kv_string_opt(sentry_json_t *writer, const char *key, const cha
     sentry_json_kv_string(writer, key, value);
 }
 
+void sentry_json_kv_micros(sentry_json_t *writer, const char *key, uint64_t micros)
+{
+    sentry_json_key(writer, key);
+    /* Two integers and a dot: the fractional part is zero-padded to six digits so that
+     * 1.000005 does not come out as 1.5. */
+    char text[32];
+    int len = snprintf(text, sizeof(text), "%llu.%06llu", (unsigned long long)(micros / 1000000ULL),
+        (unsigned long long)(micros % 1000000ULL));
+    if (len < 0) {
+        sentry_json_null(writer);
+        return;
+    }
+    separate(writer);
+    append_cstr(writer, text);
+    writer->need_comma = true;
+}
+
 bool sentry_json_ok(const sentry_json_t *writer) { return writer && !writer->overflow; }

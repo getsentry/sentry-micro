@@ -33,6 +33,15 @@ uint32_t sentry_device_min_free_heap(void);
 uint64_t sentry_device_uptime_ms(void);
 
 /**
+ * The same monotonic counter in microseconds.
+ *
+ * Spans measure their duration from this rather than from the wall clock, so the duration
+ * is right even when the clock is set part way through an operation, or never. Only the
+ * transaction's position on the timeline needs a real date.
+ */
+uint64_t sentry_device_uptime_us(void);
+
+/**
  * Fill `out` with `len` cryptographically-usable random bytes.
  *
  * Used for event ids, which must not collide across a fleet — a boot-loop reporting the
@@ -50,6 +59,22 @@ bool sentry_device_random(uint8_t *out, size_t len);
  * than confidently stamping every crash as 1 January 1970.
  */
 uint64_t sentry_device_unix_time(void);
+
+/**
+ * The same clock in microseconds, for anything that has to express a duration.
+ *
+ * Whole seconds are enough to say *when* an error happened — and if it is unknown, ingest
+ * substitutes its receive time. Neither applies to a span: an operation runs for tens of
+ * milliseconds to a couple of seconds, so at second resolution most of them are
+ * zero-length, and a duration has no server-side substitute at all. The server observes
+ * one moment; a duration needs two.
+ *
+ * Returns 0 when the clock has not been set, exactly like the seconds version. **Setting
+ * it is the application's job, not the SDK's** — it needs a transport, a message format
+ * and a drift policy, all of which belong to whoever built the device. ChromaBay seeds it
+ * from the companion app over BLE and from NTP when WiFi is up; the SDK only reads it.
+ */
+uint64_t sentry_device_unix_time_us(void);
 
 /**
  * Keep `bytes` across a panic reboot, so a crash can be reported with the context it

@@ -213,3 +213,21 @@
   stack trace rules that keep toolchain frames out of your code. Checks the mapping against
   real paths rather than for existence, because one that is a directory off looks configured
   and matches nothing — and distinguishes a missing setting from a token that cannot see it.
+- Transactions and spans: `sentry_transaction_start()` / `sentry_span_begin()` /
+  `sentry_span_end()` / `sentry_transaction_end()`, emitted as a `transaction` envelope item
+  on the trace the device already joined. The device stops being an error hanging off someone
+  else's trace and becomes a participant with real durations.
+- `sentry_span_set_measurement()` is how metrics are reported now that the standalone metrics
+  API is gone — Sentry aggregates numeric span attributes. Integers only: printf's float
+  support is an opt-in linker flag on this target, and a `%f` in a build without it prints
+  nothing at all, which would silently malform the JSON.
+- Span durations come from the monotonic clock, so they are correct even when the wall clock
+  is set part way through an operation. Only the transaction's position on the timeline needs
+  a date, and if the device has never been told one the transaction is dropped rather than
+  anchored to the epoch — a duration has no server-side substitute, unlike an event timestamp.
+  Setting the clock stays the application's job.
+- `sentry_json_kv_micros()` writes decimal seconds from an integer microsecond count, and
+  `sentry_device_unix_time_us()` / `sentry_device_uptime_us()` expose the two clocks that
+  feed it.
+- Running out of span slots is counted and tagged `spans_dropped:true` rather than silently
+  truncating, so a shortened trace can be found rather than mistaken for a simpler operation.

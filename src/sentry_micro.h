@@ -36,6 +36,7 @@
 #include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
+#include "core/sentry_span.h"
 #include "core/sentry_throttle.h"
 #include "core/sentry_trace.h"
 #include "core/sentry_transport.h"
@@ -319,6 +320,54 @@ const sentry_trace_context_t *sentry_trace_current(void);
  * joining a nonexistent one.
  */
 size_t sentry_trace_header(char *buf, size_t cap);
+
+/**
+ * Begin a transaction for an operation the device is about to perform.
+ *
+ *     sentry_transaction_start("set-colour", "device.operation");
+ *     sentry_span_t *s = sentry_span_begin("ble.decode", NULL);
+ *     ...
+ *     sentry_span_end(s);
+ *     sentry_transaction_end();
+ *
+ * `name` groups it in Sentry and must outlive the transaction — a string literal, not a
+ * stack buffer. Joins the trace already adopted from the caller, or starts one.
+ *
+ * Returns false when the SDK is disabled, when a transaction is already running (they do
+ * not nest), or when the active trace is explicitly *not* sampled — in which case nothing
+ * is built at all rather than built and discarded.
+ */
+bool sentry_transaction_start(const char *name, const char *op);
+
+/**
+ * Open a child span. Returns NULL when no transaction is running or it is full.
+ *
+ * A NULL return is safe to pass to `sentry_span_end()`, so a caller never has to check.
+ * Dropped spans are counted and tagged on the transaction, because a trace quietly missing
+ * spans reads as a complete picture of a simpler operation than the one that ran.
+ */
+sentry_span_t *sentry_span_begin(const char *op, const char *description);
+
+/** Close a span. NULL is a no-op. Closing twice keeps the first end time. */
+void sentry_span_end(sentry_span_t *span);
+
+/**
+ * Attach a measurement to a span — free heap, RSSI, frame time.
+ *
+ * This is what metrics are now: the standalone metrics API is gone, and Sentry aggregates
+ * numeric span attributes instead. Integer because everything worth measuring here is one.
+ */
+void sentry_span_set_measurement(sentry_span_t *span, const char *key, int64_t value);
+
+/**
+ * Finish the transaction and send it.
+ *
+ * Returns `SENTRY_SEND_UNAVAILABLE` with nothing sent when the device has no clock. A
+ * duration cannot be substituted server-side — the server sees one moment and a duration
+ * needs two — so a transaction without one would place real work at an arbitrary time.
+ * Errors are unaffected: they are still reportable with no clock at all.
+ */
+sentry_response_t sentry_transaction_end(void);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

@@ -16,6 +16,7 @@
 #include "sentry_boot.h"
 #include "sentry_coredump.h"
 #include "sentry_device_info.h"
+#include "sentry_span.h"
 #include "sentry_trace.h"
 
 #ifdef __cplusplus
@@ -169,6 +170,31 @@ size_t sentry_event_write(char *buf, size_t cap, const sentry_event_t *event);
  * usable was written.
  */
 size_t sentry_envelope_write(char *buf, size_t cap, const sentry_event_t *event);
+
+/**
+ * Everything a transaction needs that is not in the transaction itself.
+ *
+ * The same release, environment and device facts an event carries — a transaction is an
+ * event with `type: "transaction"`, and one that arrived without them would be
+ * unattributable to a build or a board.
+ */
+typedef struct {
+    const char *event_id;
+    const char *release;
+    const char *environment;
+    const char *board;
+    const sentry_device_info_t *device;
+} sentry_transaction_meta_t;
+
+/**
+ * Write a complete envelope wrapping one transaction.
+ *
+ * Returns the bytes needed, excluding the NUL; >= `cap` means nothing usable was written.
+ * Returns 0 when the transaction has no wall-clock anchor, because a duration cannot be
+ * substituted server-side — see `sentry_transaction_end_at()`.
+ */
+size_t sentry_transaction_envelope_write(
+    char *buf, size_t cap, const sentry_transaction_t *txn, const sentry_transaction_meta_t *meta);
 
 #ifdef __cplusplus
 }

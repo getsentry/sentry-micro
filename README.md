@@ -684,13 +684,42 @@ survives a software reset and a panic — precisely the lifetime wanted. A cold 
 it, because there was no operation in flight to remember, and the crash then carries no
 trace. That is the correct answer rather than a gap.
 
-### What this does not do yet
+### Spans: what the device did, not only what went wrong
 
-Spans. The crash-to-replay link needs none of them: trace id in, trace id on the event. Spans
-for boot phases or request handling are a separate increment. `sentry-sample_rand` is parsed
-out of `baggage` and carried alongside the trace for the same forward-compatibility reason,
-but nothing reads it yet — a device with no spans has no sampling decision of its own to make
-with it.
+Trace context alone makes the device visible in a trace *when it fails*. A transaction makes
+it a participant:
+
+```cpp
+sentry::transaction_start("set-colour", "device.operation");
+auto *decode = sentry::span_begin("ble.decode");
+sentry::span_measure(decode, "free_heap", ESP.getFreeHeap());
+sentry::span_end(decode);
+sentry::transaction_end();
+```
+
+`span_begin()` returns `nullptr` when the transaction is full and `span_end(nullptr)` is a
+no-op, so firmware never has to check. Dropped spans are counted and tagged
+`spans_dropped:true` — a trace quietly missing spans reads as a complete picture of a
+simpler operation than the one that ran.
+
+`span_measure()` **is** metrics now. The standalone metrics API is gone; Sentry aggregates
+numeric span attributes instead. Integers only, because printf's float support is an opt-in
+linker flag on this target that firmware routinely leaves off.
+
+**Durations come from the monotonic clock, so they are always right.** Only the position on
+the timeline needs a real date — and if the device has never been told one,
+`transaction_end()` sends nothing and says so. A duration has no server-side substitute: the
+server observes one moment, and a duration needs two. Errors are unaffected; they stay
+reportable with no clock at all.
+
+**Setting the clock is the application's job.** It needs a transport, a message format and a
+drift policy, all of which belong to whoever built the device. ChromaBay seeds it from its
+companion app over BLE and from NTP when WiFi is up; the SDK only reads it.
+
+Scoped to app-initiated operations. A boot transaction would start before anything has told
+the device the time, which on a BLE-only device may never happen at all on a given power
+cycle. `sentry-sample_rand` is parsed from `baggage` and carried for later use, but the
+device honours the caller's sampling decision rather than making its own.
 
 ## Writing a transport
 

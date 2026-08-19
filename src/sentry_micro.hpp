@@ -92,6 +92,30 @@ inline sentry_response_t capture_message(sentry_level_t level, const char *messa
     return sentry_capture_message(level, message);
 }
 
+/** Begin a transaction for an operation about to run. See the C header for the rules. */
+inline bool transaction_start(const char *name, const char *op = nullptr)
+{
+    return sentry_transaction_start(name, op);
+}
+
+/** Open a child span; NULL when there is no room or no transaction. */
+inline sentry_span_t *span_begin(const char *op, const char *description = nullptr)
+{
+    return sentry_span_begin(op, description);
+}
+
+/** Close a span. Safe with nullptr. */
+inline void span_end(sentry_span_t *span) { sentry_span_end(span); }
+
+/** Attach a measurement to a span — this is what metrics are now. */
+inline void span_measure(sentry_span_t *span, const char *key, int64_t value)
+{
+    sentry_span_set_measurement(span, key, value);
+}
+
+/** Finish and send. Sends nothing if the device has no clock. */
+inline sentry_response_t transaction_end() { return sentry_transaction_end(); }
+
 /** Captured messages dropped by the local throttle since init. */
 inline uint32_t suppressed_count() { return sentry_suppressed_count(); }
 
