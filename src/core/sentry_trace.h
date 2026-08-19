@@ -33,6 +33,8 @@ extern "C" {
 #define SENTRY_MICRO_TRACE_ID_LEN 33
 /** 16 hex characters plus the terminator. A span id is 8 bytes. */
 #define SENTRY_MICRO_SPAN_ID_LEN 17
+/** `"0."` plus exactly six digits, plus the terminator — the wire format is fixed-width. */
+#define SENTRY_MICRO_SAMPLE_RAND_LEN 9
 
 /**
  * One in-flight trace, as this device sees it.
@@ -54,6 +56,29 @@ typedef struct {
      * scoped to the request exactly like the trace id, and for the same reason.
      */
     char replay_id[SENTRY_MICRO_TRACE_ID_LEN];
+
+    /**
+     * The caller's organization id, from the `sentry-org_id` baggage key. Empty when
+     * absent.
+     *
+     * Not attached to anything by itself — it exists so `sentry_trace_can_continue()` can
+     * refuse to join a trace that belongs to a different org. A device with no org_id of
+     * its own, or a caller that sent none, is not a mismatch; two different digit strings
+     * are.
+     */
+    char org_id[SENTRY_MICRO_MAX_ORG_ID_LEN];
+
+    /**
+     * The `sentry-sample_rand` baggage value, verbatim: `"0."` followed by six digits.
+     * Empty when absent.
+     *
+     * Carried, not consumed: this device makes no sampling decisions of its own — there
+     * are no spans yet to sample — so there is nothing here to use it *for*. It exists so
+     * that whatever eventually does gain that need does not have to also go re-litigate
+     * where the value comes from. Not currently written back out anywhere; a device
+     * forwarding a request onward has no `baggage` writer yet to put it in.
+     */
+    char sample_rand[SENTRY_MICRO_SAMPLE_RAND_LEN];
 
     /** The upstream sampling decision. Honour it; do not make one up. */
     bool sampled;
@@ -82,6 +107,25 @@ void sentry_span_id_format(char *out, const uint8_t random_bytes[8]);
  */
 bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_trace,
     const char *baggage, const uint8_t span_id_bytes[8]);
+
+/**
+ * Whether a trace carrying `incoming_org_id` is safe to join when this device's own
+ * organization id is `own_org_id`.
+ *
+ * A known mismatch is refused unconditionally: joining a trace from a different,
+ * identified organization would leak this device's telemetry into the wrong account.
+ * `strict` only decides the ambiguous case, where exactly one side has nothing to compare:
+ *
+ *   both known, equal    -> true, always
+ *   both known, differ   -> false, always
+ *   exactly one known    -> true unless `strict`
+ *   neither known        -> true, always
+ *
+ * NULL and "" both count as "not known". Pure and host-testable, like the rest of this
+ * file — the actual decision of what to do on `false` (become the head of a new trace
+ * rather than simply failing) is the caller's, since it involves minting fresh ids.
+ */
+bool sentry_trace_can_continue(const char *incoming_org_id, const char *own_org_id, bool strict);
 
 /**
  * Begin a trace this device is the origin of — a boot, an OTA, a scheduled task.

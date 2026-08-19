@@ -249,10 +249,37 @@ bool sentry_trace_adopt(const char *sentry_trace, const char *baggage)
     if (!sentry_device_random(span_bytes, sizeof(span_bytes))) {
         return false;
     }
-    if (!sentry_trace_adopt_header(&g_state.trace, sentry_trace, baggage, span_bytes)) {
+    sentry_trace_context_t parsed;
+    if (!sentry_trace_adopt_header(&parsed, sentry_trace, baggage, span_bytes)) {
         debug_log("ignored a malformed sentry-trace header");
+        /* Parsing now goes into a local, not g_state.trace directly, so a bad header no
+         * longer clears it as a side effect of the attempt. It still has to: leaving a
+         * stale trace active here is exactly the "confidently wrong association" this
+         * whole design exists to avoid — a later panic would attach to a request that was
+         * rejected, not the one actually in flight. */
+        sentry_trace_clear(&g_state.trace);
+        sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
         return false;
     }
+
+    if (!sentry_trace_can_continue(
+            parsed.org_id, sentry_get_org_id(), g_state.options.strict_trace_continuation)) {
+        /* Well-formed, but somebody else's organization. The request is still real and
+         * still deserves a trace — the device just becomes its head instead of joining a
+         * trace it has no business being part of. */
+        uint8_t trace_bytes[16];
+        if (!sentry_device_random(trace_bytes, sizeof(trace_bytes))) {
+            sentry_trace_clear(&g_state.trace);
+            sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
+            return false;
+        }
+        sentry_trace_begin(&g_state.trace, trace_bytes, span_bytes, true);
+        sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
+        debug_log("refused a trace from a foreign org; began %s instead", g_state.trace.trace_id);
+        return true;
+    }
+
+    g_state.trace = parsed;
     /* Persisted, not just held: the crash that matters most is the one that happens while
      * serving this request, and it is not reported until the next boot. */
     sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));

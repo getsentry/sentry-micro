@@ -167,7 +167,12 @@ uint64_t sentry_device_unix_time(void)
  * would join a fictional trace.
  */
 #define SENTRY_RTC_TRACE_MAGIC 0x53545243u /* "STRC" */
-#define SENTRY_RTC_TRACE_CAP 128
+/* Headroom over sizeof(sentry_trace_context_t), not a tight fit: RTC slow memory is
+ * plentiful enough on every target this SDK supports that a few dozen spare bytes cost
+ * nothing, and it means the next field added to that struct does not also require touching
+ * this file — only exceeding this cap does, and persisting a too-large context already
+ * fails safe (see below). */
+#define SENTRY_RTC_TRACE_CAP 160
 
 RTC_NOINIT_ATTR static struct {
     uint32_t magic;

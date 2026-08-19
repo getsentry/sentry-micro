@@ -153,3 +153,15 @@
   sentry-micro's, so the Action associates the adopter's commits and not this SDK's.
   `--no-commits` / `set-commits: false` opts out, and the Action warns on a shallow checkout,
   where a single commit would be associated and would look like it had worked.
+- `sentry_trace_adopt()` now checks the incoming `sentry-org_id` baggage key against the
+  device's own (`Options::org_id`, resolved the same way it always has been) before joining
+  a trace, and refuses one from a different organization rather than mixing telemetry across
+  accounts. A device or caller that does not know its own org id is not treated as a
+  mismatch by default; set `Options::strict_trace_continuation` to require both sides to
+  agree instead. A refused trace does not fail the call — the device becomes the head of a
+  fresh trace instead, the same as `sentry_trace_start()`, since the request is still real
+  even though it is not part of the caller's trace.
+- `sentry-sample_rand` is likewise parsed out of incoming `baggage` and carried on the trace
+  context. Not consumed yet — there is nothing here to sample without spans — but captured
+  now so a later increment does not have to revisit where the Dynamic Sampling Context comes
+  from.

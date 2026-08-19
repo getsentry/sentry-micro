@@ -39,6 +39,26 @@ static bool is_all_zero(const char *text, size_t count)
     return true;
 }
 
+/** An org id is decimal digits only — same rule `sentry_dsn.c` applies to the DSN's own
+ *  `o<digits>.` host prefix, so the two never disagree on what counts as one. */
+static bool is_digit_run(const char *text, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Per the Dynamic Sampling Context spec, `sample_rand` is always `"0."` plus exactly six
+ *  digits. */
+static bool is_well_formed_sample_rand(const char *text, size_t len)
+{
+    return len == SENTRY_MICRO_SAMPLE_RAND_LEN - 1 && text[0] == '0' && text[1] == '.'
+        && is_digit_run(text + 2, 6);
+}
+
 void sentry_trace_id_format(char *out, const uint8_t random_bytes[16])
 {
     if (out && random_bytes) {
@@ -151,6 +171,44 @@ bool sentry_trace_adopt_header(sentry_trace_context_t *ctx, const char *sentry_t
     if (baggage_lookup(baggage, "sentry-replay_id", replay, sizeof(replay)) && strlen(replay) == 32
         && is_hex_run(replay, 32) && !is_all_zero(replay, 32)) {
         memcpy(ctx->replay_id, replay, sizeof(replay));
+    }
+
+    /* Same treatment: a caller not marking its org, or marking it with garbage, does not
+     * cost the trace. `sentry_trace_can_continue()` treats a missing org_id as "nothing to
+     * compare", not as a mismatch. */
+    char org_id[SENTRY_MICRO_MAX_ORG_ID_LEN];
+    if (baggage_lookup(baggage, "sentry-org_id", org_id, sizeof(org_id))) {
+        size_t org_id_len = strlen(org_id);
+        if (org_id_len > 0 && is_digit_run(org_id, org_id_len)) {
+            /* Only the digits and their terminator are initialised — unlike replay_id and
+             * sample_rand above and below, org_id has no fixed length, so a short value
+             * leaves the rest of this buffer as whatever the stack already held. Copying
+             * `sizeof(org_id)` would carry that into `ctx->org_id`, and from there into
+             * RTC memory with the rest of the struct. */
+            memcpy(ctx->org_id, org_id, org_id_len + 1);
+        }
+    }
+
+    /* Same again: nothing downstream needs this yet, so a malformed value is dropped
+     * rather than costing a trace it has nothing to do with. */
+    char sample_rand[SENTRY_MICRO_SAMPLE_RAND_LEN];
+    if (baggage_lookup(baggage, "sentry-sample_rand", sample_rand, sizeof(sample_rand))
+        && is_well_formed_sample_rand(sample_rand, strlen(sample_rand))) {
+        memcpy(ctx->sample_rand, sample_rand, sizeof(sample_rand));
+    }
+    return true;
+}
+
+bool sentry_trace_can_continue(const char *incoming_org_id, const char *own_org_id, bool strict)
+{
+    bool incoming_known = incoming_org_id && incoming_org_id[0];
+    bool own_known = own_org_id && own_org_id[0];
+
+    if (incoming_known && own_known) {
+        return strcmp(incoming_org_id, own_org_id) == 0;
+    }
+    if (incoming_known != own_known) {
+        return !strict;
     }
     return true;
 }
