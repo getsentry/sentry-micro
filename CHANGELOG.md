@@ -193,3 +193,9 @@
   build-side alternative (`-ffile-prefix-map`) was tried and dropped: it makes paths machine
   independent but `sentry-cli --include-sources` then cannot find the sources, taking the
   line of code beside each frame with it — measured, 1 debug file resolved to 0.
+- `exception.value` names the crashing task when there is no faulting address, instead of
+  being omitted. Omitting it renders as the literal string "(No error message)" under the
+  issue title — worse than the duplication that leaving it out was meant to avoid. The task
+  name says something the type does not, and unlike the PC it is stable across builds, so it
+  cannot split one issue per firmware in the no-frames grouping fallback. Caught on a real
+  event by the ChromaBay integration.

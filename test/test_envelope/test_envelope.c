@@ -558,14 +558,18 @@ static void test_crash_event_carries_an_exception(void)
 }
 
 /**
- * With no faulting address there is nothing to say that the title does not, so `value` is
- * omitted rather than filled with the type again or with the PC.
+ * With no faulting address, `value` names the crashing task.
  *
- * The PC matters here specifically: it moves on every build. Grouping normally keys off the
- * stack trace, but an event that carries no frames falls back to type + value, and a PC in
- * that string would split one real issue into one issue per firmware version.
+ * Not the type again, and not the PC — the PC moves on every build, and while grouping
+ * normally keys off the stack trace, an event carrying no frames falls back to type +
+ * value, where a PC would split one real issue into one per firmware version. The task
+ * name is stable across builds and answers the question the type does not.
+ *
+ * And not nothing: omitting the field was tried, and Sentry renders the absence as the
+ * literal string "(No error message)" beneath the title, which is worse than the
+ * duplication leaving it out was meant to avoid.
  */
-static void test_exception_without_a_faulting_address_omits_value(void)
+static void test_exception_without_a_faulting_address_names_the_task(void)
 {
     sentry_device_info_t device = sample_device();
     sentry_coredump_t crash = sample_coredump();
@@ -577,9 +581,9 @@ static void test_exception_without_a_faulting_address_omits_value(void)
     char buf[3072];
     TEST_ASSERT_TRUE(sentry_event_write(buf, sizeof(buf), &event) > 0);
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"type\":\"IntegerDivideByZero\""));
-    /* `"values"` is the array around the exception and must not be mistaken for a match. */
-    TEST_ASSERT_NULL(strstr(buf, "\"value\":"));
-    /* The address the reader actually wants is still there, as a frame. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"value\":\"in loopTask\""));
+    /* The PC stays out of the value and is still there as a frame, where it belongs. */
+    TEST_ASSERT_NULL(strstr(buf, "\"value\":\"0x"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "\"instruction_addr\":\"0x400d1234\""));
 }
 
@@ -752,7 +756,7 @@ int main(void)
     RUN_TEST(test_deferred_crash_is_still_tagged_as_a_crash);
     RUN_TEST(test_boot_event_without_a_coredump_is_not_a_crash);
     RUN_TEST(test_crash_event_carries_an_exception);
-    RUN_TEST(test_exception_without_a_faulting_address_omits_value);
+    RUN_TEST(test_exception_without_a_faulting_address_names_the_task);
     RUN_TEST(test_pc_becomes_the_frame_when_the_unwinder_found_none);
     RUN_TEST(test_frames_are_reversed_for_sentry);
     RUN_TEST(test_truncated_backtraces_say_so);

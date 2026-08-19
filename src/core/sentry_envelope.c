@@ -287,12 +287,22 @@ static void write_event(sentry_json_t *writer, const sentry_event_t *event)
          *
          * The faulting data address is the exception to all of that: on Load/StoreProhibited
          * `accessing 0x00000000` is the difference between a null dereference and a wild
-         * pointer, and no amount of symbolication recovers it from the stack. When there is
-         * no such address, `value` is omitted entirely — Sentry renders a bare type cleanly.
+         * pointer, and no amount of symbolication recovers it from the stack.
+         *
+         * Without one, the crashing task — never nothing. Omitting `value` was tried and
+         * renders as the literal string "(No error message)" under the title, which is
+         * worse than the duplication it was meant to avoid. The task name says something
+         * the type does not ("which task died" being the next question after "what
+         * happened"), and it is stable across builds, so it cannot split one issue per
+         * firmware the way a PC would in the no-frames grouping fallback.
          */
         if (crash->exception_addr_valid) {
             char value[32];
             snprintf(value, sizeof(value), "accessing 0x%08x", (unsigned)crash->exception_addr);
+            sentry_json_kv_string(writer, "value", value);
+        } else if (crash->task_name[0]) {
+            char value[sizeof("in ") + sizeof(crash->task_name)];
+            snprintf(value, sizeof(value), "in %s", crash->task_name);
             sentry_json_kv_string(writer, "value", value);
         }
         sentry_json_kv_string_opt(writer, "thread_id", crash->task_name);
