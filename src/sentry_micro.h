@@ -451,7 +451,11 @@ uint32_t sentry_metrics_dropped_count(void);
  * console is the point even when nothing else is going on — just without that attachment.
  *
  * `message` is formatted (printf-style) into a fixed buffer and truncated to fit; formatting
- * a message that is about to be truncated is cheaper than growing the ring to avoid it.
+ * a message that is about to be truncated is cheaper than growing the ring to avoid it. A
+ * truncated line is still sent, not dropped — it carries its own `t7d` attribute (`true`)
+ * so that is visible on the line itself, omitted on the lines that fit rather than spending
+ * bytes on every line to say so, and counted in `sentry_logs_truncated_count()` before it
+ * ever reaches Sentry.
  *
  * The ring holds `SENTRY_MICRO_MAX_LOGS` lines and evicts the oldest once full — unlike the
  * metrics table, there is no running total to protect here, so the newest line displacing
@@ -469,6 +473,12 @@ void sentry_log(sentry_level_t level, const char *message, ...);
  * so a chatty stretch between flushes is expected to cost old lines, not a bug.
  */
 uint32_t sentry_logs_dropped_count(void);
+
+/**
+ * Lines recorded shorter than intended, since `sentry_init()` — see the `t7d` attribute on
+ * the line itself for which one, once it reaches Sentry.
+ */
+uint32_t sentry_logs_truncated_count(void);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

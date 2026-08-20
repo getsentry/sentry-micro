@@ -57,6 +57,8 @@ typedef struct {
      * so a lifetime counter has to live outside anything a flush resets.
      */
     uint32_t logs_dropped;
+    /** Lines recorded shorter than intended, since sentry_init() — see sentry_log(). */
+    uint32_t logs_truncated;
 
     /**
      * The trace the *previous* boot died inside, recovered from RTC memory.
@@ -379,19 +381,36 @@ void sentry_log(sentry_level_t level, const char *message, ...)
     char body[SENTRY_MICRO_LOG_BODY_LEN];
     va_list args;
     va_start(args, message);
-    vsnprintf(body, sizeof(body), message, args);
+    /* vsnprintf() returns how long the formatted result *would have been*, not how much fit
+     * — the only place that information exists, since a caller downstream only ever sees
+     * the already-truncated body and cannot recover it. */
+    int written = vsnprintf(body, sizeof(body), message, args);
     va_end(args);
+    bool truncated = written < 0 || (size_t)written >= sizeof(body);
+    if (truncated && g_state.logs_truncated < UINT32_MAX) {
+        g_state.logs_truncated++;
+    }
 
     /* Recorded verbatim, or empty if nothing is active — resolved to a fallback only at
      * flush time. This is what lets a line written during a real operation stay attached to
      * it even if the operation has ended by the time the ring is serialised. */
     if (sentry_log_ring_push(&g_state.log_ring, level,
-            g_state.trace.active ? g_state.trace.trace_id : "", sentry_device_uptime_us(), body)) {
+            g_state.trace.active ? g_state.trace.trace_id : "", sentry_device_uptime_us(), body,
+            truncated)) {
         g_state.logs_dropped++;
     }
 }
 
 uint32_t sentry_logs_dropped_count(void) { return g_state.logs_dropped; }
+
+/**
+ * Lines recorded shorter than intended, since sentry_init().
+ *
+ * A device with no network still narrates this the way debug_log() would; once one does
+ * reach Sentry, the same information rides along on the line itself as the `truncated`
+ * attribute, so a fleet-wide answer does not require polling every device serially.
+ */
+uint32_t sentry_logs_truncated_count(void) { return g_state.logs_truncated; }
 
 /**
  * Send whatever has accumulated in the log ring, if anything has.

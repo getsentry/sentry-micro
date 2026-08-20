@@ -13,7 +13,7 @@ void sentry_log_ring_reset(sentry_log_ring_t *ring)
 }
 
 bool sentry_log_ring_push(sentry_log_ring_t *ring, sentry_level_t level, const char *trace_id,
-    uint64_t uptime_us, const char *body)
+    uint64_t uptime_us, const char *body, bool truncated)
 {
     if (!ring || !body) {
         return false;
@@ -41,6 +41,11 @@ bool sentry_log_ring_push(sentry_log_ring_t *ring, sentry_level_t level, const c
     snprintf(entry->trace_id, sizeof(entry->trace_id), "%s", trace_id ? trace_id : "");
     entry->uptime_us = uptime_us;
     entry->level = level;
+    /* ORs the caller's own knowledge with this call's own copy: a caller that already sized
+     * `body` to fit (sentry_log()'s vsnprintf) contributes the true signal here, while one
+     * that did not (calling this directly with an oversized string) is still caught by the
+     * copy above having truncated it regardless of what `truncated` claimed. */
+    entry->truncated = truncated || strlen(body) >= sizeof(entry->body);
     entry->used = true;
     return evicted;
 }
@@ -125,14 +130,33 @@ static uint8_t write_items(sentry_json_t *writer, const sentry_log_ring_t *ring,
         sentry_json_kv_string(writer, "body", entry->body);
         sentry_json_key(writer, "severity_number");
         sentry_json_int(writer, log_severity_number(entry->level));
-        if (device_id && device_id[0]) {
+
+        /*
+         * Attribute keys are abbreviated (`t7d`, `d_id`) rather than spelled out — an
+         * envelope's worth of these is billed against SENTRY_MICRO_ENVELOPE_BUFFER_BYTES
+         * per entry, and a full ring of maximum-length bodies is already close to that
+         * budget before attributes are added at all. Both are present only when they have
+         * something to say: `t7d` only when true, `d_id` only when a device_id was given,
+         * and `attributes` itself is skipped rather than written empty when neither applies.
+         */
+        bool has_device_id = device_id && device_id[0];
+        if (entry->truncated || has_device_id) {
             sentry_json_key(writer, "attributes");
             sentry_json_object_begin(writer);
-            sentry_json_key(writer, "device_id");
-            sentry_json_object_begin(writer);
-            sentry_json_kv_string(writer, "value", device_id);
-            sentry_json_kv_string(writer, "type", "string");
-            sentry_json_object_end(writer);
+            if (entry->truncated) {
+                sentry_json_key(writer, "t7d");
+                sentry_json_object_begin(writer);
+                sentry_json_kv_bool(writer, "value", entry->truncated);
+                sentry_json_kv_string(writer, "type", "boolean");
+                sentry_json_object_end(writer);
+            }
+            if (has_device_id) {
+                sentry_json_key(writer, "d_id");
+                sentry_json_object_begin(writer);
+                sentry_json_kv_string(writer, "value", device_id);
+                sentry_json_kv_string(writer, "type", "string");
+                sentry_json_object_end(writer);
+            }
             sentry_json_object_end(writer);
         }
         sentry_json_object_end(writer);

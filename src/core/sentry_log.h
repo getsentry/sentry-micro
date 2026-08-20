@@ -24,11 +24,17 @@ extern "C" {
 #endif
 
 /**
- * Entries held at once. Matches SENTRY_MICRO_MAX_METRICS: how many of a small accumulating
- * thing this SDK holds between flushes has one answer, not a new one per feature.
+ * Entries held at once.
+ *
+ * Lower than SENTRY_MICRO_MAX_METRICS (8): a log entry's JSON is heavier per item than a
+ * metric's — a full body plus its own attributes, against a metric's bare name and number
+ * — so the same slot count does not fit the same envelope budget. Eight entries at maximum
+ * body length, each carrying its worst-case attributes, need more than
+ * SENTRY_MICRO_ENVELOPE_BUFFER_BYTES; six is what stays under it even in that worst case,
+ * not a number chosen for its own sake.
  */
 #ifndef SENTRY_MICRO_MAX_LOGS
-#    define SENTRY_MICRO_MAX_LOGS 8
+#    define SENTRY_MICRO_MAX_LOGS 6
 #endif
 
 /**
@@ -46,6 +52,8 @@ typedef struct {
     char trace_id[SENTRY_MICRO_TRACE_ID_LEN];
     uint64_t uptime_us;
     sentry_level_t level;
+    /** Whether `body` is shorter than what was actually meant to be logged. */
+    bool truncated;
     bool used;
 } sentry_log_entry_t;
 
@@ -69,13 +77,19 @@ void sentry_log_ring_reset(sentry_log_ring_t *ring);
  * SENTRY_MICRO_LOG_BODY_LEN - 1 characters if longer; formatting the message is the caller's
  * job, same split as everywhere else in this SDK that takes a finished string.
  *
+ * `truncated` is the caller's own knowledge that `body` is shorter than what was meant to be
+ * logged — typically vsnprintf()'s return value compared against the buffer it formatted
+ * into, information this call cannot recover once `body` already reflects the loss. This
+ * call ORs that with its own truncation of `body` into the ring's fixed field, so a caller
+ * that has not already sized `body` to fit still gets a correct answer.
+ *
  * Returns true when an existing entry was evicted to make room for this one. The new line
  * is always recorded either way — nothing about this call ever rejects it — so the return
  * value exists only so a caller can count what was lost, the same role
  * sentry_metrics_count()/gauge()'s bool return plays for a name that did not fit.
  */
 bool sentry_log_ring_push(sentry_log_ring_t *ring, sentry_level_t level, const char *trace_id,
-    uint64_t uptime_us, const char *body);
+    uint64_t uptime_us, const char *body, bool truncated);
 
 /** True when there is nothing worth sending, which is the common case between flushes. */
 bool sentry_log_ring_empty(const sentry_log_ring_t *ring);
