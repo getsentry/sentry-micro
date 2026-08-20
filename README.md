@@ -387,7 +387,7 @@ matters more here than on a desktop: the most valuable event this SDK produces �
 of the crash that just happened — is built at boot, *before* the radio has associated.
 
 ```cpp
-sentry_enable_buffering(sentry_storage_nvs(8));   // or storage_fs(), below
+sentry_enable_buffering(sentry_storage_nvs(16));   // or storage_fs(), below
 ...
 void loop() {
     if (sentry_buffered_count() > 0) sentry_flush(2);   // on an interval, not every pass
@@ -406,6 +406,17 @@ mounted. **Neither backend mounts, formats, or erases anything.** NVS never eras
 space, and the filesystem backend never calls `begin()` — a reporter that reformatted a
 partition of user data to report a crash would be worse than the crash. Everything is
 confined to a `sentry` namespace / `/sentry` directory.
+
+**Sizing `slots`** is a flash budget question, not a correctness one: `sentry_storage_nvs()`
+accepts any count from 1 up to `SENTRY_NVS_MAX_SLOTS` (64) and rejects anything outside that
+range rather than clamping it. An envelope runs roughly 1 KB, so slots × 1 KB is what you are
+spending against whatever partition you gave the buffer — the stock 20 KB `nvs` partition
+makes 16 a comfortable ceiling before NVS has no room left for anything else you keep there.
+Weigh that against how long the device is realistically offline at a stretch: more slots
+survive a longer outage, at the cost of the flash they occupy whether or not they are ever
+used. This is one ring shared by every envelope type with no priority between them, so a
+size chosen too small is what an unrelated high-volume category — Application Metrics
+today, see below — can evict a crash report from.
 
 Writing your own is five functions (`write`, `read`, `erase`, `load_meta`, `save_meta`) —
 the same vtable pattern as transports, which is what lets the ring logic be host-tested

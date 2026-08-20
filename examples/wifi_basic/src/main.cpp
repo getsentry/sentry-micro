@@ -479,12 +479,20 @@ void setup()
     }
 
     /*
-     * Buffering, before anything is sent. Eight slots of NVS is roughly 6 KB of the stock
-     * 20 KB partition. Anything that cannot be delivered now is persisted and retried by
-     * sentry_flush() below, which is what makes a boot-time crash report survive having no
-     * network at the moment it is created.
+     * Buffering, before anything is sent. Sixteen slots of NVS is roughly 12-16 KB of the
+     * stock 20 KB partition (envelopes here run ~1 KB each) — this example's own choice for
+     * its own partition, not a ceiling the SDK imposes; sentry_storage_nvs() accepts any
+     * count up to SENTRY_NVS_MAX_SLOTS and a smaller firmware should pass a smaller one.
+     * Anything that cannot be delivered now is persisted and retried by sentry_flush()
+     * below, which is what makes a boot-time crash report survive having no network at the
+     * moment it is created.
+     *
+     * One shared ring across every envelope type, oldest evicted first, with no priority
+     * between them — a high-volume category left unattended for long enough can still
+     * evict something that mattered more. The fix for that is a transport that keeps
+     * delivering, not triage over whose envelope gets to keep its slot.
      */
-    if (!sentry_enable_buffering(sentry_storage_nvs(8))) {
+    if (!sentry_enable_buffering(sentry_storage_nvs(16))) {
         Serial.println("[sentry] NVS unavailable — running without an offline buffer");
     }
     Serial.printf("[sentry] %u envelope(s) buffered from a previous run, %u dropped\n",
