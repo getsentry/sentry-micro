@@ -456,6 +456,22 @@ static void demo_flood()
 }
 #endif
 
+/**
+ * Arduino-ESP32 declares this `weak` in cores/esp32/main.cpp specifically so a sketch can
+ * override it; the 8 KB default it otherwise returns is not this example's call to make.
+ *
+ * A `sentry_transaction_t` plus sentry_transaction_finish()'s 2 KB envelope buffer (see
+ * core/sentry_span.h for that measured SDK-side cost) sit on setup()'s stack frame across
+ * the wifi-connect transaction, which then calls into WiFiClientSecure for the send itself
+ * — a TLS handshake that needs several more KB of its own for mbedtls_ctr_drbg_seed()'s
+ * entropy gathering. Confirmed on real hardware: 8 KB overflows (stack canary watchpoint
+ * triggered) the first time this example holds a transaction open across that send, and
+ * setting CONFIG_ARDUINO_LOOP_STACK_SIZE via a build flag does not change it — sdkconfig.h
+ * `#define`s that macro unconditionally, after the command line, and wins. 16 KB leaves
+ * real headroom rather than a number tuned to just survive one measurement.
+ */
+size_t getArduinoLoopTaskStackSize(void) { return 16384; }
+
 void setup()
 {
     Serial.begin(115200);
