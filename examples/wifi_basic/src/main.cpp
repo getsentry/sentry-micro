@@ -200,11 +200,18 @@ static bool connect_wifi()
     if (WiFi.status() != WL_CONNECTED) {
         Serial.printf("[wifi] failed after %lums (status %d)\n",
             (unsigned long)(millis() - started), (int)WiFi.status());
+        /* Called from inside whatever trace the caller started (see setup()) — sentry_log()
+         * reads that state itself, so this line needs no trace argument to end up attached
+         * to it. */
+        sentry::log(SENTRY_LEVEL_WARNING, "WiFi connect failed after %lums (status %d)",
+            (unsigned long)(millis() - started), (int)WiFi.status());
         report_visible_networks();
         return false;
     }
 
     Serial.printf("[wifi] connected: ip=%s rssi=%ddBm in %lums\n",
+        WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (unsigned long)(millis() - started));
+    sentry::log(SENTRY_LEVEL_INFO, "WiFi connected: ip=%s rssi=%ddBm in %lums",
         WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (unsigned long)(millis() - started));
     return true;
 }
@@ -449,6 +456,22 @@ static void demo_flood()
 }
 #endif
 
+/**
+ * Arduino-ESP32 declares this `weak` in cores/esp32/main.cpp specifically so a sketch can
+ * override it; the 8 KB default it otherwise returns is not this example's call to make.
+ *
+ * A `sentry_transaction_t` plus sentry_transaction_finish()'s 2 KB envelope buffer (see
+ * core/sentry_span.h for that measured SDK-side cost) sit on setup()'s stack frame across
+ * the wifi-connect transaction, which then calls into WiFiClientSecure for the send itself
+ * — a TLS handshake that needs several more KB of its own for mbedtls_ctr_drbg_seed()'s
+ * entropy gathering. Confirmed on real hardware: 8 KB overflows (stack canary watchpoint
+ * triggered) the first time this example holds a transaction open across that send, and
+ * setting CONFIG_ARDUINO_LOOP_STACK_SIZE via a build flag does not change it — sdkconfig.h
+ * `#define`s that macro unconditionally, after the command line, and wins. 16 KB leaves
+ * real headroom rather than a number tuned to just survive one measurement.
+ */
+size_t getArduinoLoopTaskStackSize(void) { return 16384; }
+
 void setup()
 {
     Serial.begin(115200);
@@ -479,18 +502,31 @@ void setup()
     }
 
     /*
-     * Buffering, before anything is sent. Eight slots of NVS is roughly 6 KB of the stock
-     * 20 KB partition. Anything that cannot be delivered now is persisted and retried by
-     * sentry_flush() below, which is what makes a boot-time crash report survive having no
-     * network at the moment it is created.
+     * Buffering, before anything is sent. Sixteen slots of NVS is roughly 12-16 KB of the
+     * stock 20 KB partition (envelopes here run ~1 KB each) — this example's own choice for
+     * its own partition, not a ceiling the SDK imposes; sentry_storage_nvs() accepts any
+     * count up to SENTRY_NVS_MAX_SLOTS and a smaller firmware should pass a smaller one.
+     * Anything that cannot be delivered now is persisted and retried by sentry_flush()
+     * below, which is what makes a boot-time crash report survive having no network at the
+     * moment it is created.
+     *
+     * One shared ring across every envelope type, oldest evicted first, with no priority
+     * between them — a high-volume category left unattended for long enough can still
+     * evict something that mattered more. The fix for that is a transport that keeps
+     * delivering, not triage over whose envelope gets to keep its slot.
      */
-    if (!sentry_enable_buffering(sentry_storage_nvs(8))) {
+    if (!sentry_enable_buffering(sentry_storage_nvs(16))) {
         Serial.println("[sentry] NVS unavailable — running without an offline buffer");
     }
     Serial.printf("[sentry] %u envelope(s) buffered from a previous run, %u dropped\n",
         (unsigned)sentry_buffered_count(), (unsigned)sentry_dropped_count());
 
     print_sentry_state();
+
+    /* Recorded before any trace exists this boot — see sentry_log()'s doc for why an idle
+     * line is still held and sent. Compare with the line inside connect_wifi() below,
+     * recorded once the wifi-connect trace is active. */
+    sentry::log(SENTRY_LEVEL_INFO, "%s starting on %s", FIRMWARE_RELEASE, BOARD_NAME);
 
 #if SENTRY_DEMO_SCAN
     /* Build with -D SENTRY_DEMO_SCAN=1 to list what the radio can see on every boot,
@@ -519,22 +555,43 @@ void setup()
 #endif
 
     /*
-     * Join WiFi if possible — connect_wifi() prints the outcome either way, and runs a
-     * scan diagnostic on failure. Its return value now only gates the first attempt at the
-     * time sync (NTP needs a route); it is not used to pick a transport, unlike before:
-     * `transport` (file scope, declared above) already tries WiFi first and falls back to
-     * the serial relay on every delivery attempt, re-evaluated fresh each time — so a WiFi
-     * connection that comes up *after* this point still gets used for sending. Getting a
-     * synced clock the same way needs the explicit retry in loop() below: unlike picking a
-     * transport, sync_time() is not something `transport` redoes on every attempt on its
-     * own.
+     * Registered before WiFi has necessarily even connected, not after: the wifi-connect
+     * transaction below tries to send the moment it finishes, and `transport` is what
+     * makes that possible rather than something merely buffered for later. AutoTransport
+     * re-picks a route on every attempt regardless of when it was registered, so there is
+     * no reason to wait for a connection first.
      */
-    if (connect_wifi()) {
-        time_synced = sync_time();
-    }
     sentry::set_transport(transport);
     Serial.println("[sentry] transport: auto (wifi with tls verification, falling back to "
                    "the serial relay — run scripts/serial_relay.py if wifi is unreachable)");
+
+    /*
+     * Join WiFi if possible — connect_wifi() prints the outcome either way, and runs a
+     * scan diagnostic on failure. Wrapped in its own transaction so the attempt is a traced
+     * operation with a duration in Sentry, and so connect_wifi()'s own sentry_log() call
+     * lands attached to it rather than to nothing — sentry_transaction_start() starts a
+     * trace itself when none is active yet, which is what makes that attachment happen
+     * with no trace object threaded through connect_wifi().
+     *
+     * The clock sync happens *before* the transaction is finished, not just before it
+     * gates `time_synced` for loop()'s retry below: sentry_transaction_finish() needs a
+     * synced clock to keep this transaction at all (see its doc), and the very first WiFi
+     * connection of a boot is exactly the operation that makes a sync possible in the
+     * first place. Finishing after it, rather than before, is what lets
+     * this specific transaction get a real timestamp instead of being dropped every time.
+     */
+    sentry::Transaction wifi_txn;
+    sentry::transaction_start(wifi_txn, "wifi-connect", "device.operation");
+    bool wifi_connected = connect_wifi();
+    if (wifi_connected) {
+        time_synced = sync_time();
+    }
+    sentry::transaction_finish(wifi_txn);
+    /* Released, not left active: sentry_transaction_finish() ends the transaction but not
+     * the trace it rode, and anything reported past this point — the boot event below, a
+     * later demo crash — has nothing to do with this WiFi connection. Leaving it active
+     * would weld those unrelated events to it instead of leaving them untraced. */
+    sentry::trace_release();
 
     /* A recovered crash is the more interesting event, and reporting both on the same boot
      * would double up. */
@@ -551,6 +608,22 @@ void setup()
      * one crash-and-report cycle instead of an endless loop. */
     if (!sentry_reset_reason_is_crash(sentry::device_info().reset_reason)) {
         Serial.println("\n[demo] crashing deliberately in 3s ...");
+        /*
+         * A trace, not a transaction that ever finishes: demo_crash_outer() ends the boot,
+         * so there is no operation left to time or send. What matters is that a trace is
+         * active when it dies — sentry_event_attach_coredump() (see report_crash(), next
+         * boot) reads whatever trace was active at the moment of the crash and joins the
+         * recovered event to it, the same way a request handler's trace would join a crash
+         * that happened while it was running.
+         */
+        sentry::Transaction crash_txn;
+        sentry::transaction_start(crash_txn, "demo-crash", "device.operation");
+        sentry::log(SENTRY_LEVEL_FATAL, "Deliberately crashing in demo_crash_outer() in 3s");
+        /* sentry_log() only writes into the ring — see its doc — and demo_crash_outer()
+         * below ends the boot before loop() ever runs again to flush it on its own
+         * interval. Flushed explicitly here so the line this demo exists to show actually
+         * leaves the device instead of being zeroed with the rest of RAM on reset. */
+        sentry_flush(4);
         delay(3000);
         demo_crash_outer();
     }
@@ -575,14 +648,15 @@ void loop()
 
     /* Once a minute, show that the device is alive and what its resources look like —
      * the same numbers that will ride along on every event as device context. */
-    /* Retry anything the buffer is holding — this is how an event created before the radio
-     * came up eventually gets out.
+    /* Not gated on sentry_buffered_count(): that only tracks the offline retry buffer —
+     * see sentry_flush()'s own comment for why metrics and logs need this call regardless
+     * of buffer state.
      *
      * On an interval, not every iteration: a transport can block for seconds when there is
      * no route (the serial relay waits for a host that may not be listening), so flushing
      * every pass would turn `loop()` into a chain of timeouts. */
     static uint32_t last_flush = 0;
-    if (sentry_buffered_count() > 0 && millis() - last_flush >= 30000) {
+    if (millis() - last_flush >= 30000) {
         last_flush = millis();
         sentry_flush(2);
     }

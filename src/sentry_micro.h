@@ -36,6 +36,7 @@
 #include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
+#include "core/sentry_log.h"
 #include "core/sentry_metrics.h"
 #include "core/sentry_span.h"
 #include "core/sentry_throttle.h"
@@ -411,7 +412,11 @@ sentry_response_t sentry_transaction_finish(sentry_transaction_t *txn);
  * told the date the table keeps accumulating and nothing is sent — a counter covering a
  * longer interval is still true, which is why these are held rather than dropped the way a
  * transaction's stale duration would be.
+ *
+ * Not declared when built with `SENTRY_MICRO_METRICS_ENABLED=0` — see that macro in
+ * `core/sentry_metrics.h`.
  */
+#if SENTRY_MICRO_METRICS_ENABLED
 void sentry_metric_count(const char *name, int64_t delta, const char *unit);
 
 /**
@@ -432,6 +437,58 @@ void sentry_metric_gauge(const char *name, int64_t value, const char *unit);
  * entirely rather than merely coarse.
  */
 uint32_t sentry_metrics_dropped_count(void);
+#endif /* SENTRY_MICRO_METRICS_ENABLED */
+
+/**
+ * Record one console line — a mirror of the serial output for a device with no cable
+ * attached.
+ *
+ *     sentry_log(SENTRY_LEVEL_WARNING, "WiFi reconnect attempt %u", attempt);
+ *
+ * **This does not send.** Same shape as `sentry_metric_count()`/`sentry_metric_gauge()`: it
+ * writes into a fixed ring and returns, and the ring rides the next `sentry_flush()` — the
+ * property that makes it safe to call from a hot path a transaction cannot afford to trace.
+ *
+ * Unlike a metric, each line remembers whatever trace was active when it was recorded: a
+ * line written during a real operation is attached to that operation, the same way a
+ * breadcrumb would be, rather than to whatever is active (or nothing) by the time the ring
+ * happens to flush. A line recorded while idle is still held and still sent — logging the
+ * console is the point even when nothing else is going on — just without that attachment.
+ *
+ * `message` is formatted (printf-style) into a fixed buffer and truncated to fit; formatting
+ * a message that is about to be truncated is cheaper than growing the ring to avoid it. A
+ * truncated line is still sent, not dropped — it carries its own `t7d` attribute (`true`)
+ * so that is visible on the line itself, omitted on the lines that fit rather than spending
+ * bytes on every line to say so, and counted in `sentry_logs_truncated_count()` before it
+ * ever reaches Sentry.
+ *
+ * The ring holds `SENTRY_MICRO_MAX_LOGS` lines and evicts the oldest once full — unlike the
+ * metrics table, there is no running total to protect here, so the newest line displacing
+ * the oldest is the right trade for a continuous stream.
+ *
+ * `message` is sent to Sentry like any other log line — do not put a DSN, WiFi password, or
+ * anything else secret into it, the same rule as any logging call.
+ *
+ * Not declared when built with `SENTRY_MICRO_LOGS_ENABLED=0` — see that macro in
+ * `core/sentry_log.h`.
+ */
+#if SENTRY_MICRO_LOGS_ENABLED
+void sentry_log(sentry_level_t level, const char *message, ...);
+
+/**
+ * Lines dropped because the ring was full, since `sentry_init()`.
+ *
+ * Moves whenever logging outpaces `sentry_flush()`'s cadence — the ring is short by design,
+ * so a chatty stretch between flushes is expected to cost old lines, not a bug.
+ */
+uint32_t sentry_logs_dropped_count(void);
+
+/**
+ * Lines recorded shorter than intended, since `sentry_init()` — see the `t7d` attribute on
+ * the line itself for which one, once it reaches Sentry.
+ */
+uint32_t sentry_logs_truncated_count(void);
+#endif /* SENTRY_MICRO_LOGS_ENABLED */
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

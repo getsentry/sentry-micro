@@ -387,7 +387,7 @@ matters more here than on a desktop: the most valuable event this SDK produces �
 of the crash that just happened — is built at boot, *before* the radio has associated.
 
 ```cpp
-sentry_enable_buffering(sentry_storage_nvs(8));   // or storage_fs(), below
+sentry_enable_buffering(sentry_storage_nvs(16));   // or storage_fs(), below
 ...
 void loop() {
     if (sentry_buffered_count() > 0) sentry_flush(2);   // on an interval, not every pass
@@ -406,6 +406,17 @@ mounted. **Neither backend mounts, formats, or erases anything.** NVS never eras
 space, and the filesystem backend never calls `begin()` — a reporter that reformatted a
 partition of user data to report a crash would be worse than the crash. Everything is
 confined to a `sentry` namespace / `/sentry` directory.
+
+**Sizing `slots`** is a flash budget question, not a correctness one: `sentry_storage_nvs()`
+accepts any count from 1 up to `SENTRY_NVS_MAX_SLOTS` (64) and rejects anything outside that
+range rather than clamping it. An envelope runs roughly 1 KB, so slots × 1 KB is what you are
+spending against whatever partition you gave the buffer — the stock 20 KB `nvs` partition
+makes 16 a comfortable ceiling before NVS has no room left for anything else you keep there.
+Weigh that against how long the device is realistically offline at a stretch: more slots
+survive a longer outage, at the cost of the flash they occupy whether or not they are ever
+used. This is one ring shared by every envelope type with no priority between them, so a
+size chosen too small is what an unrelated high-volume category — Application Metrics
+today, see below — can evict a crash report from.
 
 Writing your own is five functions (`write`, `read`, `erase`, `load_meta`, `save_meta`) —
 the same vtable pattern as transports, which is what lets the ring logic be host-tested
@@ -747,6 +758,14 @@ reports it.
 Integers only, because printf's float support is an opt-in linker flag on this target that
 firmware routinely leaves off.
 
+**The table costs 272 bytes of permanent RAM whether or not you ever call these** — unlike a
+transaction's spans, a metric has to survive across flushes rather than living on a caller's
+stack for one operation, so it is a permanent `g_state` field the same way the log ring
+below is. `SENTRY_MICRO_METRICS_ENABLED=0` removes it, along with `sentry_metric_count()` /
+`sentry_metric_gauge()` / `sentry_metrics_dropped_count()` — see
+[Logs](#logs-a-continuous-console-correlated-by-trace) for the measured table; the two
+toggles are independent and combine.
+
 ### What it costs
 
 | | |
@@ -775,6 +794,67 @@ Scoped to app-initiated operations. A boot transaction would start before anythi
 the device the time, which on a BLE-only device may never happen at all on a given power
 cycle. `sentry-sample_rand` is parsed from `baggage` and carried for later use, but the
 device honours the caller's sampling decision rather than making its own.
+
+### Logs: a continuous console, correlated by trace
+
+A deployed device's console is the one thing you most want and cannot have — it is a cable
+you are not attached to. `sentry_log()` mirrors it:
+
+```cpp
+sentry::log(SENTRY_LEVEL_WARNING, "WiFi reconnect attempt %u", attempt);
+```
+
+**Recording does not send, the same as a metric** — it writes into a fixed ring and rides
+the next `sentry_flush()`. Unlike a metric, each line remembers whatever trace was active
+when it was *recorded*, not whatever happens to be active when the ring is flushed later —
+the same way a breadcrumb attaches to what the device was actually doing, rather than to
+nothing (or something unrelated) by the time the batch goes out. A line recorded while idle
+is still held and sent, just without that attachment: logging the console is the point even
+when nothing else is going on.
+
+The message is formatted printf-style into a fixed `SENTRY_MICRO_LOG_BODY_LEN`-byte buffer
+(81 bytes by default, a conventional terminal line width) and truncated to fit rather than
+dropped — a shortened line you can still read beats losing it entirely. Truncation is
+computed from `vsnprintf()`'s own return value, not predicted at compile time, and reported
+two ways: `sentry_logs_truncated_count()` since init, and a per-line `t7d` attribute
+(present only when true) once the line reaches Sentry.
+
+The ring holds `SENTRY_MICRO_MAX_LOGS` lines (6 by default) and evicts the oldest once
+full — unlike the metrics table, there is no running total to protect here, so the newest
+line displacing the old one is the right trade for a continuous stream.
+`sentry_logs_dropped_count()` reports how many were evicted before they were ever sent.
+
+### What it costs
+
+| | |
+| --- | --- |
+| Permanent RAM | **832 B** at the defaults (`sentry_log_ring_t`: 6 × 136-byte entries) |
+| Flash, always linked | ~1.5 KB — `flush_logs()` runs on every `sentry_flush()`, whether or not the firmware ever calls `sentry_log()` |
+
+Unlike a transaction, this is not opt-in by usage: the ring is a permanent `g_state` field,
+because a log line — like a metric — has to survive across flushes rather than living on a
+caller's stack for one operation. `SENTRY_MICRO_LOGS_ENABLED=0` removes it entirely:
+
+```ini
+build_flags = -D SENTRY_MICRO_LOGS_ENABLED=0
+```
+
+Measured on `esp32dev`, a build of `wifi_basic` that never calls `sentry_log()`, with and
+without:
+
+| | Enabled (default) | `SENTRY_MICRO_LOGS_ENABLED=0` | Saved |
+| --- | --- | --- | --- |
+| Flash | 941,557 B | 940,061 B | 1,496 B |
+| RAM | 49,924 B | 49,092 B | 832 B |
+
+`sentry_log()`, `sentry_logs_dropped_count()` and `sentry_logs_truncated_count()` are not
+declared at all when disabled, the same as `set_ca_cert()` under `SENTRY_MICRO_WIFI_TLS=0`
+above — a build that turns logs off and still tries to call one fails to compile rather than
+silently doing nothing.
+
+`SENTRY_MICRO_METRICS_ENABLED=0` does the same for Application Metrics (272 B RAM, ~1.1 KB
+flash on the same build), and the two toggles combine: **1,104 B RAM and 3,056 B flash**
+saved with both off.
 
 ## Writing a transport
 

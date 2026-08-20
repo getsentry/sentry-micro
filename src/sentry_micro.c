@@ -42,10 +42,30 @@ typedef struct {
     /**
      * Numbers accumulated between flushes. About 200 bytes, and unlike a transaction this
      * has to live across calls — a counter that reset every time nobody was looking would
-     * count nothing.
+     * count nothing. Absent entirely when built with SENTRY_MICRO_METRICS_ENABLED=0.
      */
+#if SENTRY_MICRO_METRICS_ENABLED
     sentry_metrics_t metrics;
     uint32_t metrics_dropped;
+#endif
+
+    /**
+     * Console lines accumulated between flushes. See core/sentry_log.h. Absent entirely
+     * when built with SENTRY_MICRO_LOGS_ENABLED=0.
+     */
+#if SENTRY_MICRO_LOGS_ENABLED
+    sentry_log_ring_t log_ring;
+    /**
+     * Lines evicted from the ring since sentry_init(), persistent across flushes.
+     *
+     * Separate from log_ring.dropped on purpose, same split as metrics/metrics_dropped:
+     * the ring's own counter describes the batch about to be sent and is cleared with it,
+     * so a lifetime counter has to live outside anything a flush resets.
+     */
+    uint32_t logs_dropped;
+    /** Lines recorded shorter than intended, since sentry_init() — see sentry_log(). */
+    uint32_t logs_truncated;
+#endif
 
     /**
      * The trace the *previous* boot died inside, recovered from RTC memory.
@@ -344,6 +364,7 @@ size_t sentry_trace_header(char *buf, size_t cap)
     return sentry_trace_header_write(buf, cap, &g_state.trace);
 }
 
+#if SENTRY_MICRO_METRICS_ENABLED
 void sentry_metric_count(const char *name, int64_t delta, const char *unit)
 {
     if (g_state.enabled && !sentry_metrics_count(&g_state.metrics, name, delta, unit)) {
@@ -359,6 +380,100 @@ void sentry_metric_gauge(const char *name, int64_t value, const char *unit)
 }
 
 uint32_t sentry_metrics_dropped_count(void) { return g_state.metrics_dropped; }
+#endif /* SENTRY_MICRO_METRICS_ENABLED */
+
+#if SENTRY_MICRO_LOGS_ENABLED
+void sentry_log(sentry_level_t level, const char *message, ...)
+{
+    if (!g_state.enabled || !message) {
+        return;
+    }
+    char body[SENTRY_MICRO_LOG_BODY_LEN];
+    va_list args;
+    va_start(args, message);
+    /* vsnprintf() returns how long the formatted result *would have been*, not how much fit
+     * — the only place that information exists, since a caller downstream only ever sees
+     * the already-truncated body and cannot recover it. */
+    int written = vsnprintf(body, sizeof(body), message, args);
+    va_end(args);
+    bool truncated = written < 0 || (size_t)written >= sizeof(body);
+    if (truncated && g_state.logs_truncated < UINT32_MAX) {
+        g_state.logs_truncated++;
+    }
+
+    /* Recorded verbatim, or empty if nothing is active — resolved to a fallback only at
+     * flush time. This is what lets a line written during a real operation stay attached to
+     * it even if the operation has ended by the time the ring is serialised. */
+    if (sentry_log_ring_push(&g_state.log_ring, level,
+            g_state.trace.active ? g_state.trace.trace_id : "", sentry_device_uptime_us(), body,
+            truncated)) {
+        g_state.logs_dropped++;
+    }
+}
+
+uint32_t sentry_logs_dropped_count(void) { return g_state.logs_dropped; }
+
+/**
+ * Lines recorded shorter than intended, since sentry_init().
+ *
+ * A device with no network still narrates this the way debug_log() would; once one does
+ * reach Sentry, the same information rides along on the line itself as the `truncated`
+ * attribute, so a fleet-wide answer does not require polling every device serially.
+ */
+uint32_t sentry_logs_truncated_count(void) { return g_state.logs_truncated; }
+
+/**
+ * Send whatever has accumulated in the log ring, if anything has.
+ *
+ * Called from sentry_flush() only — never from sentry_log() itself, for the same reason
+ * flush_metrics() (below) is never called from the recording calls: recording touches a
+ * ring, and only a flush touches the transport.
+ *
+ * Unlike flush_metrics(), this never mints a trace by calling sentry_trace_start(): doing
+ * so mutates g_state.trace and never releases it again, which is harmless the way metrics
+ * uses it but would be wrong here — the fallback below is scoped to this one envelope only.
+ */
+static void flush_logs(void)
+{
+    if (sentry_log_ring_empty(&g_state.log_ring)) {
+        return;
+    }
+
+    /* Every log needs a timestamp, so a device that has not been told the date cannot send
+     * yet. Held rather than dropped, same reasoning as metrics: a longer covered interval is
+     * still true, unlike a line timestamped to the epoch. */
+    uint64_t now_unix_us = sentry_device_unix_time_us();
+    if (now_unix_us == 0) {
+        debug_log("holding logs: the device has not been told the date");
+        return;
+    }
+
+    /* A fallback trace_id for any entry that had none active when it was recorded — minted
+     * locally for this flush only and never written to g_state.trace, so it cannot outlive
+     * the envelope it was minted for. */
+    char fallback_trace_id[SENTRY_MICRO_TRACE_ID_LEN] = { 0 };
+    uint8_t trace_bytes[16];
+    if (sentry_device_random(trace_bytes, sizeof(trace_bytes))) {
+        sentry_trace_id_format(fallback_trace_id, trace_bytes);
+    }
+
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    size_t needed = sentry_log_envelope_write(envelope, sizeof(envelope), &g_state.log_ring,
+        fallback_trace_id, g_state.device.device_id, sentry_device_uptime_us(), now_unix_us);
+    if (needed == 0 || needed >= sizeof(envelope)) {
+        debug_log("logs need %u bytes, envelope buffer is %u", (unsigned)needed,
+            (unsigned)sizeof(envelope));
+        return;
+    }
+
+    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
+    /* Cleared whether or not the send succeeded, same reasoning as flush_metrics(): a failed
+     * send has already been buffered for retry by sentry_send_envelope() if it was worth
+     * retrying, so keeping the ring too would resend every line on the next flush. */
+    sentry_log_ring_reset(&g_state.log_ring);
+    debug_log("flushed logs: result %d", (int)response.result);
+}
+#endif /* SENTRY_MICRO_LOGS_ENABLED */
 
 /**
  * Send whatever has accumulated, if anything has.
@@ -367,6 +482,7 @@ uint32_t sentry_metrics_dropped_count(void) { return g_state.metrics_dropped; }
  * that makes a counter safe in a render loop: recording touches a table, and only the
  * flush — already on an interval the firmware chose — touches the transport.
  */
+#if SENTRY_MICRO_METRICS_ENABLED
 static void flush_metrics(void)
 {
     if (sentry_metrics_empty(&g_state.metrics)) {
@@ -405,6 +521,7 @@ static void flush_metrics(void)
     sentry_metrics_reset(&g_state.metrics);
     debug_log("flushed metrics: result %d", (int)response.result);
 }
+#endif /* SENTRY_MICRO_METRICS_ENABLED */
 
 bool sentry_transaction_start(sentry_transaction_t *txn, const char *name, const char *op)
 {
@@ -572,10 +689,17 @@ uint32_t sentry_flush(uint32_t max_events)
     if (!g_state.enabled || in_backoff()) {
         return 0;
     }
-    /* Before the buffered envelopes, and outside the buffering check: metrics accumulate
-     * whether or not offline buffering was ever enabled, and a device that never buffers
-     * still wants its heap reported. */
+    /* Before the buffered envelopes, and outside the buffering check: metrics and logs
+     * accumulate whether or not offline buffering was ever enabled, and a device that never
+     * buffers still wants its heap reported and its console mirrored. Either call compiles
+     * away entirely when its feature is built out — see SENTRY_MICRO_METRICS_ENABLED /
+     * SENTRY_MICRO_LOGS_ENABLED. */
+#if SENTRY_MICRO_METRICS_ENABLED
     flush_metrics();
+#endif
+#if SENTRY_MICRO_LOGS_ENABLED
+    flush_logs();
+#endif
 
     if (!g_state.buffering) {
         return 0;

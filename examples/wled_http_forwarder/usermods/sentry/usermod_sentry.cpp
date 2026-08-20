@@ -108,10 +108,10 @@ public:
             DEBUG_PRINTLN(F("[sentry] init failed — check SENTRY_DSN"));
         }
 
-        /* Eight slots of NVS, same as wifi_basic. Anything the forwarder can't take right
+        /* Sixteen slots of NVS, same as wifi_basic. Anything the forwarder can't take right
          * now survives here and is retried by loop()'s sentry_flush() below — including
          * across a reboot, which is the case this whole design exists for. */
-        if (!sentry_enable_buffering(sentry_storage_nvs(8))) {
+        if (!sentry_enable_buffering(sentry_storage_nvs(16))) {
             DEBUG_PRINTLN(F("[sentry] NVS unavailable — running without an offline buffer"));
         }
 

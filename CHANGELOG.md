@@ -276,3 +276,53 @@
   clock: they do, and until the device has been told the date the table keeps accumulating
   rather than being dropped — a counter over a longer interval is still true, unlike a stale
   duration.
+- Offline buffer grown from 8 to 16 slots in both examples, and documented how to size
+  `slots`: `sentry_storage_nvs()` already accepted any count from 1 to `SENTRY_NVS_MAX_SLOTS`
+  (64), a smaller firmware should pass a smaller one. Still one shared ring across every
+  envelope type with no priority tier — the fix for a high-volume category evicting
+  something that mattered more is a transport that keeps delivering, not triage over whose
+  envelope keeps its slot.
+- Logs: `sentry_log()` / `sentry::log()`, a fixed-size ring of `SENTRY_MICRO_MAX_LOGS`
+  console lines emitted as a `log` envelope item. Unlike a metric, each line remembers
+  whatever trace was active when it was recorded rather than whatever is active at flush
+  time — a line written during a real operation stays attached to it, the same way a
+  breadcrumb would. A line recorded while idle is still held and sent, just without that
+  attachment; logging the console is the point even when nothing else is going on.
+- Each log line tracks its own truncation from `vsnprintf()`'s actual return value rather
+  than predicting it at compile time — exact instead of a conservative worst-case bound, and
+  it works for a runtime format string too. Surfaced as a persistent
+  `sentry_logs_truncated_count()` and a per-line `t7d` attribute, present only when true.
+  `sentry_logs_dropped_count()` persists since `sentry_init()` rather than resetting every
+  flush, matching `sentry_metrics_dropped_count()`'s own contract.
+- A full ring of realistic-length log lines did not fit in
+  `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES`, even before the truncation attribute existed —
+  `flush_logs()` would have silently refused to send and left the ring stuck indefinitely.
+  Fixed by abbreviating attribute keys (`truncated` → `t7d`, `device_id` → `d_id`), making
+  both keys — and the `attributes` object itself — conditional, and lowering
+  `SENTRY_MICRO_MAX_LOGS` from 8 to 6.
+- `wifi_basic` now traces the WiFi connect attempt and a deliberate demo crash
+  (`-D SENTRY_DEMO_CRASH=1`), with `sentry_log()` calls riding both: one line recorded
+  before any trace exists this boot carries no `trace_id`, one recorded during the
+  wifi-connect transaction does. The crash-demo transaction is deliberately never
+  finished — the trace it leaves active is what `sentry_event_attach_coredump()` joins the
+  recovered crash event to on the next boot.
+- `wifi_basic`'s periodic flush in `loop()` was gated on `sentry_buffered_count() > 0`,
+  which only tracks the offline retry buffer. Metrics and logs accumulate independently of
+  that buffer and were never actually being flushed in the common case of nothing ever
+  landing in it — a pre-existing gap since the buffering example was written, unnoticed
+  until logs needed the ring to ever go out. Flush is no longer gated on it.
+- Holding a live `sentry::Transaction` open across a WiFi/TLS send overflows Arduino's
+  default 8 KB loop task stack, confirmed on real hardware.
+  `-D CONFIG_ARDUINO_LOOP_STACK_SIZE=<n>` looks like the fix but does nothing: `sdkconfig.h`
+  redefines that macro unconditionally after the command line and wins. `wifi_basic` now
+  overrides Arduino-ESP32's own `getArduinoLoopTaskStackSize()` `weak` hook instead, raising
+  the stack to 16 KB.
+- `SENTRY_MICRO_LOGS_ENABLED=0` and `SENTRY_MICRO_METRICS_ENABLED=0` remove the log ring and
+  metrics table entirely, the same pattern `SENTRY_MICRO_WIFI_TLS=0` already uses for the
+  TLS branch. Unlike a transaction's spans, both tables are permanent `g_state` fields —
+  a metric or a log line has to survive across flushes rather than living on a caller's
+  stack for one operation — so they cost RAM whether or not firmware ever calls them, with
+  no way before this to get it back. Measured on `esp32dev`: 832 B RAM / 1,496 B flash for
+  logs, 272 B RAM / 1,140 B flash for metrics, on a build that never calls either. Disabled
+  functions are not declared at all rather than becoming no-ops, so a build that turns a
+  feature off and still calls it fails to compile instead of silently doing nothing.

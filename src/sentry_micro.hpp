@@ -137,6 +137,7 @@ inline sentry_response_t transaction_finish(Transaction &txn)
 }
 
 /** Add to a counter. Does not send; rides the next flush. */
+#if SENTRY_MICRO_METRICS_ENABLED
 inline void metric_count(const char *name, int64_t delta = 1, const char *unit = nullptr)
 {
     sentry_metric_count(name, delta, unit);
@@ -150,6 +151,28 @@ inline void metric_gauge(const char *name, int64_t value, const char *unit = nul
 
 /** Metric names dropped because the table was full. */
 inline uint32_t metrics_dropped() { return sentry_metrics_dropped_count(); }
+#endif /* SENTRY_MICRO_METRICS_ENABLED */
+
+/**
+ * Record one console line, printf-style. Does not send; rides the next flush.
+ *
+ * A plain forwarding template, not a checked one: `sentry_log()`'s own vsnprintf() already
+ * truncates safely and reports it (see `logs_truncated()` and the `truncated` attribute on
+ * the line itself), so there is nothing left for this wrapper to add by re-deriving that at
+ * compile time.
+ */
+#if SENTRY_MICRO_LOGS_ENABLED
+template <typename... Args> inline void log(sentry_level_t level, const char *message, Args... args)
+{
+    sentry_log(level, message, args...);
+}
+
+/** Lines evicted from the ring before they were ever sent. */
+inline uint32_t logs_dropped() { return sentry_logs_dropped_count(); }
+
+/** Lines recorded shorter than intended. */
+inline uint32_t logs_truncated() { return sentry_logs_truncated_count(); }
+#endif /* SENTRY_MICRO_LOGS_ENABLED */
 
 /** Captured messages dropped by the local throttle since init. */
 inline uint32_t suppressed_count() { return sentry_suppressed_count(); }
