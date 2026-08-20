@@ -910,6 +910,26 @@ cd examples/wifi_basic && pio run      # compile-check against every ESP32 varia
 Building the example on all four variants is the portability gate — a change that breaks
 RISC-V or single-core builds fails there rather than on someone's bench.
 
+**Formatting runs in CI (`clang-format`, pinned to 22.1.8) and fails the build if a file
+isn't formatted.** Catch it before pushing instead of after:
+
+```bash
+pip install clang-format==22.1.8   # exact version — brew's formula tracks upstream
+                                    # latest and will eventually drift off this pin
+brew install prek                  # or: pipx install prek — https://prek.j178.dev
+prek install                       # one-time; also works with `pre-commit install`
+```
+
+This installs a git hook from [`.pre-commit-config.yaml`](.pre-commit-config.yaml) that
+runs `scripts/format.sh` — the exact script and clang-format version CI uses — on the
+C/C++ files in each `git commit`. Deliberately narrower than CI, which checks the whole
+tree on every push: this only fails your commit over files *you* touched, not some
+already-unformatted file elsewhere that CI would also catch on its own. If it reformats
+anything, the commit is blocked; `git add -u` the reformatted files and commit again. Run
+it on demand with `prek run --all-files`, or skip it for one commit with
+`git commit --no-verify`. (Git hooks live in the repository, not the checkout —
+installing from one `git worktree` of this repo enables it for all of them.)
+
 **Touching anything that uses an Arduino API? Build C6 too:**
 
 ```bash
