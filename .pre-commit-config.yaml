@@ -1,0 +1,32 @@
+# Runs the same checks CI does, before CI does — install once with `prek install` (or
+# `pre-commit install`, prek reads this same file) and this runs automatically on every
+# `git commit`. Skip it for one commit with `git commit --no-verify`; run it on demand
+# against everything with `prek run --all-files`.
+#
+# Scoped to the files in the commit, not the whole tree: CI's `clang-format` job checks
+# every source file on every push, but a commit here should live or die on the files it
+# actually changed, not on some unrelated file elsewhere that happened to already be
+# unformatted — that file is CI's problem to catch (on whatever commit touches it), not a
+# reason to block this one.
+#
+# A local hook, not one of the upstream clang-format mirrors: those track whatever
+# clang-format version they were packaged against, and scripts/format.sh already pins the
+# exact version CI uses (22.1.8) so a contributor's hook and CI's job never disagree about
+# what "formatted" means. Install that exact version with
+# `pip install clang-format==22.1.8` — not `brew install clang-format`, whose formula
+# tracks upstream's latest release rather than this pin, and will eventually drift ahead
+# of it.
+repos:
+  - repo: local
+    hooks:
+      - id: clang-format
+        name: clang-format (scripts/format.sh)
+        description: >-
+          Reformats the C/C++ source files in this commit in place with the pinned
+          clang-format, matching what CI's `clang-format` job would say about those
+          specific files. If it changes anything, the commit is blocked — `git add -u`
+          the reformatted files and commit again.
+        entry: scripts/format.sh
+        language: system
+        files: \.(c|h|cpp|hpp)$
+        pass_filenames: true
