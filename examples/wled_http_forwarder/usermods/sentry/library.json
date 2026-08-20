@@ -1,0 +1,5 @@
+{
+  "name": "sentry",
+  "build": { "libArchive": false },
+  "dependencies": {}
+}

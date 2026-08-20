@@ -3,7 +3,19 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * Explicit, not left to esp_core_dump.h to pull in transitively — whether that happens
+ * depends on how deep in someone else's build this file sits. When compiled as a
+ * library nested under another project's own usermod or plugin rather than as a
+ * top-level project source, esp_core_dump.h's own includes may not reach sdkconfig.h,
+ * leaving every CONFIG_ESP_COREDUMP_* check below silently undefined regardless of the
+ * actual configuration. Including it here directly makes the check reflect reality no
+ * matter what pulled this file in.
+ */
+// clang-format off
+#include "sdkconfig.h"
 #include "esp_core_dump.h"
+// clang-format on
 
 /*
  * The whole path depends on the panic handler having somewhere to write. Both conditions
