@@ -98,6 +98,93 @@ static void test_a_full_table_drops_the_new_name_not_a_running_total(void)
     TEST_ASSERT_EQUAL_INT64(15, m.items[0].value);
 }
 
+/*
+ * The budget the flush path actually writes into, which nothing here checked before.
+ *
+ * A metric name is stored as the caller's pointer and never copied (see sentry_metric_t), so
+ * its length is unbounded, and it is JSON-escaped on the way out like anything else. That
+ * makes a table which does not fit SENTRY_MICRO_ENVELOPE_BUFFER_BYTES reachable rather than
+ * theoretical — and an over-budget table used to stop metrics for the rest of the boot,
+ * since flush_metrics() returned without clearing it and a full table also refuses new names.
+ */
+static void test_a_full_table_of_ordinary_names_fits_the_envelope_budget(void)
+{
+    sentry_metrics_t m;
+    sentry_metrics_reset(&m);
+    static const char *names[SENTRY_MICRO_MAX_METRICS] = {
+        "heap.free",
+        "heap.min_free",
+        "wifi.rssi",
+        "battery.mv",
+        "render.frame_us",
+        "ota.duration_ms",
+        "ble.throughput",
+        "loop.iterations",
+    };
+    for (int i = 0; i < SENTRY_MICRO_MAX_METRICS; i++) {
+        sentry_metrics_gauge(&m, names[i], 1234567, "byte");
+    }
+
+    size_t needed = sentry_metrics_envelope_write(NULL, 0, &m, TRACE, NOW_US);
+    TEST_ASSERT_TRUE(needed > 0);
+    TEST_ASSERT_TRUE(needed <= SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+}
+
+static void test_an_over_budget_table_is_reported_honestly_and_writes_nothing(void)
+{
+    sentry_metrics_t m;
+    static char names[SENTRY_MICRO_MAX_METRICS][129];
+    sentry_metrics_reset(&m);
+
+    /* Long but perfectly legal names. Eight of these encode past the budget, which is what
+     * flush_metrics() has to detect in order to drop the batch instead of retrying it. */
+    for (int i = 0; i < SENTRY_MICRO_MAX_METRICS; i++) {
+        memset(names[i], 'n', sizeof(names[i]) - 1);
+        names[i][sizeof(names[i]) - 1] = '\0';
+        names[i][0] = (char)('a' + i);
+        sentry_metrics_gauge(&m, names[i], 42, "byte");
+    }
+
+    size_t needed = sentry_metrics_envelope_write(NULL, 0, &m, TRACE, NOW_US);
+    TEST_ASSERT_TRUE(needed > SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+
+    /* Over budget must mean nothing written, not a truncated envelope that still looks
+     * plausible — that report is the only thing the flush path decides on. */
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    TEST_ASSERT_EQUAL_size_t(
+        needed, sentry_metrics_envelope_write(envelope, sizeof(envelope), &m, TRACE, NOW_US));
+    TEST_ASSERT_EQUAL_STRING("", envelope);
+}
+
+static void test_escaping_in_a_name_counts_toward_the_budget(void)
+{
+    sentry_metrics_t plain;
+    sentry_metrics_t escaped;
+    static char plain_names[SENTRY_MICRO_MAX_METRICS][65];
+    static char quoted_names[SENTRY_MICRO_MAX_METRICS][65];
+    sentry_metrics_reset(&plain);
+    sentry_metrics_reset(&escaped);
+
+    for (int i = 0; i < SENTRY_MICRO_MAX_METRICS; i++) {
+        memset(plain_names[i], 'n', sizeof(plain_names[i]) - 1);
+        memset(quoted_names[i], '"', sizeof(quoted_names[i]) - 1);
+        plain_names[i][sizeof(plain_names[i]) - 1] = '\0';
+        quoted_names[i][sizeof(quoted_names[i]) - 1] = '\0';
+        plain_names[i][0] = (char)('a' + i);
+        quoted_names[i][0] = (char)('a' + i);
+        sentry_metrics_gauge(&plain, plain_names[i], 42, "byte");
+        sentry_metrics_gauge(&escaped, quoted_names[i], 42, "byte");
+    }
+
+    /* Same raw name length; the measurement has to come from the encoder, the same property
+     * test_escaping_counts_toward_the_envelope_budget() guards for logs. */
+    size_t plain_needed = sentry_metrics_envelope_write(NULL, 0, &plain, TRACE, NOW_US);
+    size_t escaped_needed = sentry_metrics_envelope_write(NULL, 0, &escaped, TRACE, NOW_US);
+    TEST_ASSERT_TRUE(plain_needed <= SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+    TEST_ASSERT_TRUE(escaped_needed > plain_needed);
+    TEST_ASSERT_TRUE(escaped_needed > SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+}
+
 static void test_empty_until_something_is_recorded(void)
 {
     sentry_metrics_t m;
@@ -207,6 +294,9 @@ int main(void)
     RUN_TEST(test_matching_is_by_content_not_pointer);
     RUN_TEST(test_a_full_table_drops_the_new_name_not_a_running_total);
     RUN_TEST(test_empty_until_something_is_recorded);
+    RUN_TEST(test_a_full_table_of_ordinary_names_fits_the_envelope_budget);
+    RUN_TEST(test_an_over_budget_table_is_reported_honestly_and_writes_nothing);
+    RUN_TEST(test_escaping_in_a_name_counts_toward_the_budget);
     RUN_TEST(test_writes_a_trace_metric_envelope);
     RUN_TEST(test_no_trace_means_no_envelope);
     RUN_TEST(test_no_clock_means_no_envelope);

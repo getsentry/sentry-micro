@@ -643,8 +643,33 @@ static void flush_metrics(void)
     size_t needed = sentry_metrics_envelope_write(
         envelope, sizeof(envelope), &g_state.metrics, g_state.trace.trace_id, now_unix_us);
     if (needed == 0 || needed >= sizeof(envelope)) {
-        debug_log("metrics need %u bytes, envelope buffer is %u", (unsigned)needed,
-            (unsigned)sizeof(envelope));
+        /* Too large to encode. Returning with the table intact would re-measure and
+         * re-refuse the identical batch on every later flush, and metrics would simply stop
+         * for the rest of the boot — worse here than the same bug was for logs, because a
+         * full table also refuses *new* names, so the composition that cannot be sent is
+         * also the composition that is now stuck. Same trade as flush_logs(): this batch is
+         * lost, the pipe keeps moving.
+         *
+         * Reachable because a name is stored as the caller's pointer and never copied, so
+         * its length is unbounded. Measured against the 2,048-byte budget: eight typical
+         * short names encode to 1,316, eight 64-character names to 1,700, but eight
+         * 128-character names to 2,212 — and eight 64-character names containing quotes to
+         * 2,196, since a name is JSON-escaped like anything else.
+         *
+         * Not counted in sentry_metrics_dropped_count(), for the same reason the rejected
+         * branch below is not: the public header defines that as distinct *names* that did
+         * not fit the table, and folding a batch drop into it would make one number mean two
+         * unrelated things.
+         *
+         * Honest about what this does not fix: unlike a log ring, whose next batch holds
+         * different lines, the metrics table re-forms from the same names the firmware keeps
+         * reporting, so an over-budget table will drop again every flush rather than
+         * recover. This turns "silently wedged forever" into "dropped and reported every
+         * time", which is strictly better and still not good — serialising only as many
+         * items as fit is the real answer, tracked separately. */
+        debug_log("dropping a metrics batch that needs %u bytes; envelope buffer is %u",
+            (unsigned)needed, (unsigned)sizeof(envelope));
+        sentry_metrics_reset(&g_state.metrics);
         return;
     }
 

@@ -376,3 +376,19 @@
     62.0 µs into RTC on an ESP32-PICO-D4 at 240 MHz. `RTC_FAST_ATTR` is not an alternative —
     `.rtc.force_fast` is a loaded section that does not survive a reset uninitialised, and
     RTC fast memory is PRO_CPU-only while Arduino runs `loop()` on core 1.
+- `flush_metrics()` wedged on an over-budget batch, the same defect fixed for logs in
+  e919dd6 and not carried across at the time. It returned without clearing the table, so the
+  identical batch was re-measured and re-refused on every later flush and metrics stopped for
+  the rest of the boot. Worse than the log version of the bug: a full table also refuses new
+  names, so the composition that could not be sent was also the one now stuck there. Reachable
+  because a metric name is stored as the caller's pointer and never copied, making its length
+  unbounded, and it is JSON-escaped on the way out like anything else — measured against the
+  2,048-byte budget, eight typical names encode to 1,316 bytes, eight 64-character names to
+  1,700, eight 128-character names to 2,212, and eight 64-character names containing quotes
+  to 2,196. An over-budget batch is now dropped and reported. Three regression tests cover
+  the budget, the over-budget report, and escaping in a name.
+  - Known limit: unlike a log ring, whose next batch holds different lines, the metrics table
+    re-forms from the same names the firmware keeps reporting, so an over-budget table drops
+    again on every flush rather than recovering. That turns "silently wedged forever" into
+    "dropped and reported every time" — strictly better, still not good. Serialising only as
+    many items as fit is the real fix, tracked in SDK-1422.
