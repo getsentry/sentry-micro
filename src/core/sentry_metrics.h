@@ -53,13 +53,75 @@ extern "C" {
  * Distinct metric names held at once.
  *
  * Aggregated in place, so this bounds *names*, not calls — a counter hit a thousand times a
- * second occupies one slot. Eight covers the numbers a device actually has; a ninth name is
- * dropped and counted rather than evicting one that is already accumulating, because losing
- * a running total silently is worse than not starting a new one.
+ * second occupies one slot. A name beyond this is dropped and counted rather than evicting
+ * one that is already accumulating, because losing a running total silently is worse than
+ * not starting a new one.
+ *
+ * Ten, not the eight this was, and not a round number chosen for its own sake. Eight was
+ * set on the claim that it "covers the numbers a device actually has", which turned out to
+ * be wrong on the first real integration: a controller reported boot, setup_ms, free_heap,
+ * min_free_heap, loop_stack_free, uptime, fps_x10, ble_disconnect — and then
+ * `sentry_logs_dropped_count()` and `sentry_logs_truncated_count()`, which this SDK's own
+ * API invites you to report. A default that cannot accommodate the SDK's own suggested
+ * usage is the wrong default.
+ *
+ * Raising it is not free, and the cost is in the envelope rather than in RAM (a slot is
+ * ~24 bytes). Every item carries its own 32-character trace_id and timestamp, so an item
+ * costs ~142 bytes with a short name and never less than ~114. Measured against
+ * SENTRY_MICRO_ENVELOPE_BUFFER_BYTES at 2048, with short names: ten items encode to 1,555
+ * bytes, thirteen to 1,976, and fourteen to 2,117 — over. Longer names move that cliff
+ * closer, and eight 128-character names already exceed the budget on their own.
+ *
+ * So the headroom at ten is real but finite, and it is name-length-sensitive. An
+ * over-budget batch is dropped and reported rather than wedging the table (see
+ * flush_metrics()), and the compile-time check below refuses only the values that cannot work at
+ * any name length.
  */
 #ifndef SENTRY_MICRO_MAX_METRICS
-#    define SENTRY_MICRO_MAX_METRICS 8
+#    define SENTRY_MICRO_MAX_METRICS 10
 #endif
+
+/**
+ * Why every item repeats the same trace_id, and why that cannot be batched away.
+ *
+ * At ten metrics, `"trace_id":"<32 hex>"` accounts for ~460 of ~1,555 bytes — near enough a
+ * third of the envelope spent on one string repeated ten times. Since flush_metrics()
+ * resolves a single trace id for the whole batch (minting one when the device is idle,
+ * which is its normal state), the obvious saving is to state it once and let ingest expand
+ * it.
+ *
+ * Ingest does not allow that. The trace metric spec makes `trace_id` **REQUIRED on every
+ * metric payload**, and defines no shared, common or default attributes across the items in
+ * a `trace_metric` container — the `items` array is a batching convenience, not a place to
+ * factor out repeated fields. Mixing metrics from different traces in one item is
+ * explicitly permitted, which is precisely why the field cannot be hoisted.
+ * See https://develop.sentry.dev/sdk/telemetry/metrics/.
+ *
+ * Written down so the next person to notice those repeated bytes does not have to
+ * re-investigate. If the spec ever grows shared attributes, this is the single biggest
+ * lever on how many metrics fit a constrained transport — it would roughly double it.
+ */
+
+/**
+ * Refuses a SENTRY_MICRO_MAX_METRICS that cannot fit the envelope at *any* name length.
+ *
+ * A floor check, deliberately not a guarantee: the real encoded size depends on how long
+ * the names are, which is a runtime property. This catches only the values that are wrong
+ * before a single character of name is written — the case that previously failed silently
+ * at runtime, on a device, by dropping every batch.
+ */
+#define SENTRY_MICRO_METRIC_ITEM_MIN_BYTES 114
+#define SENTRY_MICRO_METRIC_ENVELOPE_FIXED_BYTES 131
+
+/* A negative-width array rather than static_assert: this SDK builds as C99, where
+ * static_assert does not exist. The error a compiler prints for it names this type, which is
+ * why the type is named the way it is. */
+typedef char sentry_micro_max_metrics_must_fit_the_envelope_buffer
+    [(SENTRY_MICRO_METRIC_ENVELOPE_FIXED_BYTES
+             + (SENTRY_MICRO_MAX_METRICS)*SENTRY_MICRO_METRIC_ITEM_MIN_BYTES
+         <= SENTRY_MICRO_ENVELOPE_BUFFER_BYTES)
+            ? 1
+            : -1];
 
 typedef enum {
     /** Monotonic total since the last flush, e.g. brownouts, BLE disconnects. */

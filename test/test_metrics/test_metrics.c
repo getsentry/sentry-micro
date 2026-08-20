@@ -160,8 +160,8 @@ static void test_escaping_in_a_name_counts_toward_the_budget(void)
 {
     sentry_metrics_t plain;
     sentry_metrics_t escaped;
-    static char plain_names[SENTRY_MICRO_MAX_METRICS][65];
-    static char quoted_names[SENTRY_MICRO_MAX_METRICS][65];
+    static char plain_names[SENTRY_MICRO_MAX_METRICS][41];
+    static char quoted_names[SENTRY_MICRO_MAX_METRICS][41];
     sentry_metrics_reset(&plain);
     sentry_metrics_reset(&escaped);
 
@@ -176,7 +176,12 @@ static void test_escaping_in_a_name_counts_toward_the_budget(void)
         sentry_metrics_gauge(&escaped, quoted_names[i], 42, "byte");
     }
 
-    /* Same raw name length; the measurement has to come from the encoder, the same property
+    /* Same raw name length, chosen so the plain table fits and only escaping pushes it over
+     * — that margin depends on SENTRY_MICRO_MAX_METRICS, so this length is not arbitrary.
+     * At ten slots, forty characters: plain encodes to 1,813 and quoted to 2,203 against a
+     * 2,048-byte budget. Thirty-two would leave quoted at 2,043 and quietly stop testing
+     * anything, so this number moves if the slot count does.
+     * The measurement has to come from the encoder, the same property
      * test_escaping_counts_toward_the_envelope_budget() guards for logs. */
     size_t plain_needed = sentry_metrics_envelope_write(NULL, 0, &plain, TRACE, NOW_US);
     size_t escaped_needed = sentry_metrics_envelope_write(NULL, 0, &escaped, TRACE, NOW_US);

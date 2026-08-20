@@ -392,3 +392,22 @@
     again on every flush rather than recovering. That turns "silently wedged forever" into
     "dropped and reported every time" — strictly better, still not good. Serialising only as
     many items as fit is the real fix, tracked in SDK-1422.
+- `SENTRY_MICRO_MAX_METRICS` raised from 8 to 10. Eight was set on the claim that it "covers
+  the numbers a device actually has", which the first real integration disproved: a
+  controller reported `boot`, `setup_ms`, `free_heap`, `min_free_heap`, `loop_stack_free`,
+  `uptime`, `fps_x10` and `ble_disconnect`, and then `sentry_logs_dropped_count()` and
+  `sentry_logs_truncated_count()` — two counters this SDK's own API invites you to report. A
+  default that cannot fit the SDK's own suggested usage is the wrong default. Costs 64 B of
+  RAM.
+- A `SENTRY_MICRO_MAX_METRICS` that cannot fit the envelope buffer at any name length is now
+  a compile error rather than a device that silently drops every batch at runtime. A floor
+  check, deliberately not a guarantee: an item costs ~142 bytes with a short name and never
+  less than ~114, but the real encoded size depends on name length. Measured against the
+  2,048-byte budget with short names, ten items encode to 1,555 bytes, thirteen to 1,976 and
+  fourteen to 2,117.
+- Written down in `sentry_metrics.h`: the identical `trace_id` repeated on every item is
+  about a third of a ten-metric envelope, and it cannot be hoisted to the item header.
+  Sentry's trace-metric spec makes `trace_id` required on every metric payload and defines no
+  shared or default attributes across a container, precisely because one container may mix
+  metrics from different traces. Recorded so the next person to notice those bytes does not
+  have to re-investigate.

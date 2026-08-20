@@ -761,11 +761,32 @@ told the date, the table keeps accumulating and nothing is sent: a counter cover
 interval is still true, which is why metrics *wait* where a transaction's stale duration
 would make it drop.
 
-The table holds `SENTRY_MICRO_MAX_METRICS` (8) distinct **names** — a counter hit a thousand
-times a second is still one slot. A ninth name is dropped and counted rather than evicting
-one that is already accumulating, because a running total that silently restarts is worse
-than one that never started: only the second is visible. `sentry_metrics_dropped_count()`
-reports it.
+The table holds `SENTRY_MICRO_MAX_METRICS` (10) distinct **names** — a counter hit a thousand
+times a second is still one slot. A name beyond that is dropped and counted rather than
+evicting one that is already accumulating, because a running total that silently restarts is
+worse than one that never started: only the second is visible.
+`sentry_metrics_dropped_count()` reports it.
+
+Ten because eight was not enough for the first real integration, which reported `boot`,
+`setup_ms`, `free_heap`, `min_free_heap`, `loop_stack_free`, `uptime`, `fps_x10` and
+`ble_disconnect` — and then `sentry_logs_dropped_count()` and
+`sentry_logs_truncated_count()`, which this SDK's own API invites you to report. A default
+that cannot fit the SDK's own suggested usage is the wrong default.
+
+**Raising it further is bounded by the envelope, not by RAM.** A slot is 32 bytes, but every
+metric on the wire carries its own 32-character `trace_id` and timestamp, so an item costs
+~142 bytes with a short name and never less than ~114. Against the 2,048-byte envelope
+buffer, with short names: ten items encode to 1,555 bytes, thirteen to 1,976, and fourteen
+to 2,117 — over. Longer names move that cliff closer; ten 40-character names still fit at
+1,813, but ten of the same length containing quotes reach 2,203, because names are
+JSON-escaped like anything else. A value that cannot work at *any* name length is now a
+compile error rather than a device that silently drops every batch.
+
+That repeated `trace_id` is about a third of the envelope at ten metrics, and it cannot be
+factored out: Sentry's trace-metric spec makes `trace_id`
+[required on every metric payload](https://develop.sentry.dev/sdk/telemetry/metrics/) and
+defines no shared or default attributes across the items in one container — precisely
+because a single container is allowed to mix metrics from different traces.
 
 Integers only, because printf's float support is an opt-in linker flag on this target that
 firmware routinely leaves off.
@@ -907,9 +928,8 @@ declared at all when disabled, the same as `set_ca_cert()` under `SENTRY_MICRO_W
 above — a build that turns logs off and still tries to call one fails to compile rather than
 silently doing nothing.
 
-`SENTRY_MICRO_METRICS_ENABLED=0` does the same for Application Metrics (272 B RAM, ~1.1 KB
-flash on the same build), and the two toggles combine: **1,104 B RAM and 3,056 B flash**
-saved with both off.
+`SENTRY_MICRO_METRICS_ENABLED=0` does the same for Application Metrics (~336 B RAM at the
+current ten slots, ~1.1 KB flash on the same build).
 
 ## Writing a transport
 
