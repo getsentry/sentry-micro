@@ -127,8 +127,12 @@ public:
             request->send(200, "text/plain",
                 "Crashing in 500ms — watch the serial console for the recovered "
                 "backtrace on next boot.\n");
-            crashPending_ = true;
+            /* Deadline set before the pending flag, not after: loop() runs on the other
+             * core and only checks crashAtMs_ once it observes crashPending_ true, so this
+             * order guarantees it never reads a stale (default-zero) deadline and fires
+             * immediately instead of after the 500ms wait. */
             crashAtMs_ = millis() + 500;
+            crashPending_ = true;
         });
 
         /* A recovered crash is the more interesting event; reporting both on the same
@@ -197,13 +201,23 @@ private:
             return true;
         }
 
+        uint32_t bufferedBefore = sentry_buffered_count();
         sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
         DEBUG_PRINTF("[sentry] crash report result %d (http %u)\n", (int)response.result,
             (unsigned)response.http_status);
 
-        /* Erase only once the envelope is somewhere durable — delivered, or buffered.
-         * Erasing on a plain failure would throw away the crash just recovered. */
-        if (response.result == SENTRY_SEND_OK || sentry_buffered_count() > 0) {
+        /* Erase only once *this* envelope is somewhere durable — delivered, or newly
+         * buffered. sentry_buffered_count() > 0 alone isn't enough to tell that apart from
+         * a buffer that already held older entries: if this envelope fails to send and
+         * also fails to enqueue (buffer full, storage error), that check still passes on
+         * the old entries alone, and erasing here would lose the crash just recovered
+         * without it ever landing anywhere. Comparing against the count taken before the
+         * send call is the only way to tell "queue has stuff in it" apart from "my
+         * envelope is the reason it does" without sentry_send_envelope() itself
+         * distinguishing the two outcomes. */
+        bool durablyHeld
+            = response.result == SENTRY_SEND_OK || sentry_buffered_count() > bufferedBefore;
+        if (durablyHeld) {
             sentry_coredump_erase();
             DEBUG_PRINTLN(F("[sentry] coredump erased"));
         } else {
