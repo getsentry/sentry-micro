@@ -17,6 +17,7 @@
  */
 
 #include <Arduino.h>
+#include <time.h>
 #include <WiFi.h>
 
 #include <device/sentry_storage_nvs.h>
@@ -83,6 +84,10 @@
 #endif
 
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+static const uint32_t TIME_SYNC_TIMEOUT_MS = 20000;
+/* Matches the guard in sentry_device_unix_time_us(): below this, the clock has not been
+ * set and is not a real time, whatever it reads. */
+static const time_t TIME_SYNC_PLAUSIBLE_EPOCH_S = 1600000000;
 
 /* File scope, not locals: the SDK stores a pointer, so these have to outlive setup(). */
 static sentry::WiFiTransport wifi_transport;
@@ -91,6 +96,11 @@ static sentry::SerialTransport serial_transport;
  * (there is no way to detect a listener on a bare UART), so it has to go last — anything
  * placed after it would never be reached. */
 static sentry::AutoTransport transport({ &wifi_transport, &serial_transport });
+
+/* Set once sync_time() succeeds; read in loop() to decide whether to keep retrying. File
+ * scope for the same reason as the transports above: setup() only gets one attempt at
+ * this, but a WiFi connection that comes up after setup() has returned still needs it. */
+static bool time_synced = false;
 
 /**
  * List what the radio can actually see.
@@ -196,6 +206,41 @@ static bool connect_wifi()
 
     Serial.printf("[wifi] connected: ip=%s rssi=%ddBm in %lums\n",
         WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (unsigned long)(millis() - started));
+    return true;
+}
+
+/**
+ * Sync the system clock via SNTP, blocking until it reaches a plausible time or times out.
+ *
+ * An ESP32 has no battery-backed clock: coming out of reset it believes it is 1970, which
+ * is before every real certificate's validity window. TLS fails the moment it checks that
+ * window, well before anything Sentry-specific runs — so this has to happen before the
+ * first send attempt, not just before whatever in this SDK cares about a timestamp.
+ *
+ * Returns true once the clock is plausible, so a caller with no route yet (WiFi not up)
+ * can retry later instead of leaving TLS broken for the rest of the boot — see the retry in
+ * loop().
+ */
+static bool sync_time()
+{
+    Serial.print("[time] syncing via SNTP ...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+    time_t now = 0;
+    uint32_t started = millis();
+    while (now < TIME_SYNC_PLAUSIBLE_EPOCH_S && millis() - started < TIME_SYNC_TIMEOUT_MS) {
+        delay(250);
+        Serial.print(".");
+        time(&now);
+    }
+    Serial.println();
+
+    if (now < TIME_SYNC_PLAUSIBLE_EPOCH_S) {
+        Serial.println("[time] sync failed — TLS verification and any timestamped Sentry "
+                       "item (transaction, metric) will not go through until it succeeds");
+        return false;
+    }
+    Serial.printf("[time] synced: %s", asctime(gmtime(&now)));
     return true;
 }
 
@@ -475,13 +520,18 @@ void setup()
 
     /*
      * Join WiFi if possible — connect_wifi() prints the outcome either way, and runs a
-     * scan diagnostic on failure. Its return value is not used to pick a transport, unlike
-     * before: `transport` (file scope, declared above) already tries WiFi first and falls
-     * back to the serial relay on every delivery attempt, re-evaluated fresh each time —
-     * so a WiFi connection that comes up *after* this point still gets used, with no
-     * reboot and no code here watching for the transition.
+     * scan diagnostic on failure. Its return value now only gates the first attempt at the
+     * time sync (NTP needs a route); it is not used to pick a transport, unlike before:
+     * `transport` (file scope, declared above) already tries WiFi first and falls back to
+     * the serial relay on every delivery attempt, re-evaluated fresh each time — so a WiFi
+     * connection that comes up *after* this point still gets used for sending. Getting a
+     * synced clock the same way needs the explicit retry in loop() below: unlike picking a
+     * transport, sync_time() is not something `transport` redoes on every attempt on its
+     * own.
      */
-    connect_wifi();
+    if (connect_wifi()) {
+        time_synced = sync_time();
+    }
     sentry::set_transport(transport);
     Serial.println("[sentry] transport: auto (wifi with tls verification, falling back to "
                    "the serial relay — run scripts/serial_relay.py if wifi is unreachable)");
@@ -509,6 +559,20 @@ void setup()
 
 void loop()
 {
+    /* Retry the clock sync if the first attempt in setup() did not land — WiFi that
+     * associates late (out of range for a few seconds, an AP mid-reboot) is exactly the
+     * case `transport` above already handles by re-picking a route on every send, but a
+     * synced clock is not re-derived the same way, so nothing else here revisits it. On an
+     * interval and only while WiFi is actually up, for the same reason as the flush below:
+     * sync_time() blocks for up to TIME_SYNC_TIMEOUT_MS when it fails, which is too long to
+     * retry on every pass. */
+    static uint32_t last_time_sync_attempt = 0;
+    if (!time_synced && WiFi.status() == WL_CONNECTED
+        && millis() - last_time_sync_attempt >= 30000) {
+        last_time_sync_attempt = millis();
+        time_synced = sync_time();
+    }
+
     /* Once a minute, show that the device is alive and what its resources look like —
      * the same numbers that will ride along on every event as device context. */
     /* Retry anything the buffer is holding — this is how an event created before the radio
