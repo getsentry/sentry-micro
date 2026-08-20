@@ -824,6 +824,15 @@ full — unlike the metrics table, there is no running total to protect here, so
 line displacing the old one is the right trade for a continuous stream.
 `sentry_logs_dropped_count()` reports how many were evicted before they were ever sent.
 
+It also counts the rarer second case. A body is held raw but serialised **JSON-escaped**, and
+escaping is not free: a `"` or a `\` becomes two bytes, a control character becomes six. A
+full ring of ordinary-looking console text — a quoted string, a Windows path, a JSON payload
+being logged — can therefore encode past `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` even though its
+raw bytes fit comfortably. Such a batch would measure exactly the same on every later flush,
+so it is **dropped rather than retried**: holding it would stall the ring behind one
+unsendable batch and take every line recorded afterwards down with it. The lines are counted
+as dropped and the reason is reported through `sentry_set_logger()`.
+
 ### What it costs
 
 | | |

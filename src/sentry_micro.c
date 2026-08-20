@@ -63,7 +63,13 @@ typedef struct {
      * so a lifetime counter has to live outside anything a flush resets.
      */
     uint32_t logs_dropped;
-    /** Lines recorded shorter than intended, since sentry_init() — see sentry_log(). */
+    /**
+     * Lines recorded shorter than intended, since sentry_init() — see sentry_log().
+     *
+     * Note this counts a *record-time* loss, unlike logs_dropped's second cause, which is a
+     * flush-time one: a body can be recorded untruncated and still make its batch unsendable
+     * once escaped.
+     */
     uint32_t logs_truncated;
 #endif
 
@@ -456,13 +462,33 @@ static void flush_logs(void)
     if (sentry_device_random(trace_bytes, sizeof(trace_bytes))) {
         sentry_trace_id_format(fallback_trace_id, trace_bytes);
     }
+    if (!fallback_trace_id[0]) {
+        /* No entropy, so nothing serialises at all: sentry_log_envelope_write() refuses a
+         * batch with no fallback whether or not any entry actually needs one. Held rather
+         * than dropped, for the same reason the clock above is — the RNG answering is a
+         * change of state this exact batch survives, unlike the size failure below. */
+        debug_log("holding logs: no trace id could be minted for the batch");
+        return;
+    }
 
     char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
     size_t needed = sentry_log_envelope_write(envelope, sizeof(envelope), &g_state.log_ring,
         fallback_trace_id, g_state.device.device_id, sentry_device_uptime_us(), now_unix_us);
     if (needed == 0 || needed >= sizeof(envelope)) {
-        debug_log("logs need %u bytes, envelope buffer is %u", (unsigned)needed,
-            (unsigned)sizeof(envelope));
+        /* Too large to encode, and it will be exactly as large on every later flush: what
+         * pushes a ring over the budget is JSON escaping — a `"` or `\` doubles, a control
+         * character becomes six bytes — and holding the batch does not shrink it. Keeping it
+         * would wedge the ring behind one unsendable batch forever, and every line recorded
+         * after it too, so drop it and keep going. That is the same trade the buffered
+         * envelope loop in sentry_flush() already makes for an entry it cannot read, and
+         * these lines are counted the way an eviction counts them, because they are gone
+         * for the same reason: the ring had no room to carry them any further. */
+        uint32_t lost = g_state.log_ring.count;
+        debug_log("dropping %u logs: need %u bytes, envelope buffer is %u", (unsigned)lost,
+            (unsigned)needed, (unsigned)sizeof(envelope));
+        g_state.logs_dropped
+            = UINT32_MAX - g_state.logs_dropped < lost ? UINT32_MAX : g_state.logs_dropped + lost;
+        sentry_log_ring_reset(&g_state.log_ring);
         return;
     }
 

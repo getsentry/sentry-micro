@@ -326,3 +326,14 @@
   logs, 272 B RAM / 1,140 B flash for metrics, on a build that never calls either. Disabled
   functions are not declared at all rather than becoming no-ops, so a build that turns a
   feature off and still calls it fails to compile instead of silently doing nothing.
+- A full log ring whose bodies contain quotes, backslashes or control characters could
+  encode past `SENTRY_MICRO_ENVELOPE_BUFFER_BYTES` once JSON-escaped, and `flush_logs()`
+  returned without clearing the ring — so the same oversized batch was re-measured and
+  re-refused on every later flush, stalling the ring permanently and taking every line
+  recorded afterwards with it. Measured: a full ring of maximum-length bodies costs 1,944
+  bytes filled with `x`, 2,424 filled with `"`, and 4,344 filled with control characters,
+  against a 2,048-byte budget. An oversized batch is now dropped and counted in
+  `sentry_logs_dropped_count()`, matching what `sentry_flush()` already does for a buffered
+  envelope it cannot read: the batch is lost, but the pipe never jams. A failure to mint the
+  batch's fallback trace id is held rather than dropped, since unlike the size failure that
+  batch does encode fine once the RNG answers.

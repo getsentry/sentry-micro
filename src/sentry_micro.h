@@ -476,10 +476,19 @@ uint32_t sentry_metrics_dropped_count(void);
 void sentry_log(sentry_level_t level, const char *message, ...);
 
 /**
- * Lines dropped because the ring was full, since `sentry_init()`.
+ * Lines that will never be sent, since `sentry_init()`.
  *
- * Moves whenever logging outpaces `sentry_flush()`'s cadence — the ring is short by design,
- * so a chatty stretch between flushes is expected to cost old lines, not a bug.
+ * Two ways to get here, counted together because the line is equally gone either way:
+ *
+ * - The ring was full when a newer line arrived, so the oldest was evicted. Moves whenever
+ *   logging outpaces `sentry_flush()`'s cadence — the ring is short by design, so a chatty
+ *   stretch between flushes is expected to cost old lines, not a bug.
+ * - A whole batch encoded larger than the envelope buffer and was discarded rather than
+ *   retried. A body is stored raw but serialised JSON-escaped, and a ring full of quotes,
+ *   backslashes or control characters can exceed the budget that the same ring's raw bytes
+ *   fit inside. Such a batch would measure exactly the same on every later flush, so
+ *   holding it would stall the ring permanently — it is dropped so the stream keeps moving.
+ *   Rare, and reported through `sentry_set_logger()` when it happens.
  */
 uint32_t sentry_logs_dropped_count(void);
 

@@ -119,12 +119,15 @@ static void test_a_full_ring_of_worst_case_entries_fits_the_envelope_budget(void
     char max_body[SENTRY_MICRO_LOG_BODY_LEN];
     sentry_log_ring_reset(&r);
 
-    /* The scenario that actually matters in production: a full ring of maximum-length
-     * bodies, every one of them truncated (the expensive case for the conditional `t7d`
-     * attribute), with a device_id to attach. sentry_log_envelope_write() writes into
-     * exactly SENTRY_MICRO_ENVELOPE_BUFFER_BYTES in flush_logs() — this is the number that
-     * has to stay under that budget, not any of the short-body cases the other tests use,
-     * which would not have caught SENTRY_MICRO_MAX_LOGS/attribute-size regressions here. */
+    /* A full ring of maximum-length bodies, every one of them truncated (the expensive case
+     * for the conditional `t7d` attribute), with a device_id to attach.
+     * sentry_log_envelope_write() writes into exactly SENTRY_MICRO_ENVELOPE_BUFFER_BYTES in
+     * flush_logs() — this is the number that has to stay under that budget, not any of the
+     * short-body cases the other tests use, which would not have caught
+     * SENTRY_MICRO_MAX_LOGS/attribute-size regressions here.
+     *
+     * `x` is worst case for *raw* length only, and that is the whole limit of what this
+     * test proves — see the sibling below for what escaping does to the same ring. */
     memset(max_body, 'x', sizeof(max_body) - 1);
     max_body[sizeof(max_body) - 1] = '\0';
     for (int i = 0; i < SENTRY_MICRO_MAX_LOGS; i++) {
@@ -135,6 +138,62 @@ static void test_a_full_ring_of_worst_case_entries_fits_the_envelope_budget(void
         = sentry_log_envelope_write(NULL, 0, &r, FALLBACK_TRACE, DEVICE_ID, 100000, NOW_UNIX_US);
     TEST_ASSERT_TRUE(needed > 0);
     TEST_ASSERT_TRUE(needed <= SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+}
+
+/*
+ * The sibling of the test above, and the one that catches the regression class it cannot:
+ * a body is stored raw but serialised *escaped*. sentry_json_kv_string() turns each `"` and
+ * `\\` into two bytes and each control character into six, so the ring's fixed byte count
+ * says nothing about what the envelope actually costs. Ordinary console text hits this — a
+ * quoted string, a Windows path, a JSON payload being logged — it is not a contrived input.
+ *
+ * A full ring of those genuinely does not fit the budget and cannot be made to at this
+ * MAX_LOGS. What has to hold is that the size probe says so *honestly*, because that report
+ * is the only thing flush_logs() has to go on when it decides to drop the batch rather than
+ * retry it forever.
+ */
+static void test_escaping_counts_toward_the_envelope_budget(void)
+{
+    sentry_log_ring_t plain_ring;
+    sentry_log_ring_t escaped_ring;
+    char plain_body[SENTRY_MICRO_LOG_BODY_LEN];
+    char escaped_body[SENTRY_MICRO_LOG_BODY_LEN];
+
+    sentry_log_ring_reset(&plain_ring);
+    sentry_log_ring_reset(&escaped_ring);
+    memset(plain_body, 'x', sizeof(plain_body) - 1);
+    plain_body[sizeof(plain_body) - 1] = '\0';
+    memset(escaped_body, '"', sizeof(escaped_body) - 1);
+    escaped_body[sizeof(escaped_body) - 1] = '\0';
+    for (int i = 0; i < SENTRY_MICRO_MAX_LOGS; i++) {
+        sentry_log_ring_push(
+            &plain_ring, SENTRY_LEVEL_WARNING, TRACE, (uint64_t)i * 1000, plain_body, true);
+        sentry_log_ring_push(
+            &escaped_ring, SENTRY_LEVEL_WARNING, TRACE, (uint64_t)i * 1000, escaped_body, true);
+    }
+
+    size_t plain_needed = sentry_log_envelope_write(
+        NULL, 0, &plain_ring, FALLBACK_TRACE, DEVICE_ID, 100000, NOW_UNIX_US);
+    size_t escaped_needed = sentry_log_envelope_write(
+        NULL, 0, &escaped_ring, FALLBACK_TRACE, DEVICE_ID, 100000, NOW_UNIX_US);
+
+    /* Two rings of identical raw size. The measurement has to come from the encoder, not
+     * from strlen() — if these ever come out equal, escaping has stopped being counted. */
+    TEST_ASSERT_TRUE(escaped_needed > plain_needed);
+
+    /* And this is the batch that used to wedge the ring: over budget, so flush_logs() can
+     * never send it, so it must drop it instead of holding it for a retry that will measure
+     * exactly the same next time. */
+    TEST_ASSERT_TRUE(escaped_needed > SENTRY_MICRO_ENVELOPE_BUFFER_BYTES);
+
+    /* Over budget must mean nothing written, not a truncated envelope that still looks
+     * plausible — same contract as test_envelope_write_reports_the_size_it_needs(), checked
+     * here at exactly the buffer size flush_logs() really uses. */
+    char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
+    TEST_ASSERT_EQUAL_size_t(escaped_needed,
+        sentry_log_envelope_write(envelope, sizeof(envelope), &escaped_ring, FALLBACK_TRACE,
+            DEVICE_ID, 100000, NOW_UNIX_US));
+    TEST_ASSERT_EQUAL_STRING("", envelope);
 }
 
 static void test_an_overlong_body_is_truncated_not_dropped(void)
@@ -432,6 +491,7 @@ int main(void)
     RUN_TEST(test_a_full_ring_evicts_the_oldest_not_the_newest);
     RUN_TEST(test_entries_serialise_oldest_first);
     RUN_TEST(test_a_full_ring_of_worst_case_entries_fits_the_envelope_budget);
+    RUN_TEST(test_escaping_counts_toward_the_envelope_budget);
     RUN_TEST(test_an_overlong_body_is_truncated_not_dropped);
     RUN_TEST(test_recorded_trace_id_wins_over_the_fallback);
     RUN_TEST(test_an_idle_recorded_line_falls_back_to_the_batch_trace);
