@@ -390,9 +390,15 @@ of the crash that just happened — is built at boot, *before* the radio has ass
 sentry_enable_buffering(sentry_storage_nvs(16));   // or storage_fs(), below
 ...
 void loop() {
-    if (sentry_buffered_count() > 0) sentry_flush(2);   // on an interval, not every pass
+    sentry_flush(2);   // on an interval, not every pass
 }
 ```
+
+Do **not** gate that call on `sentry_buffered_count() > 0`. That counter tracks only the
+offline retry buffer, while Application Metrics and Logs accumulate in RAM independently of
+it — so on a healthy device that never fails a send, the count stays zero, the flush never
+runs, and neither category is ever delivered at all. `sentry_flush()` is cheap when there is
+nothing to do.
 
 **Storage is pluggable**, because the right answer depends on what the firmware already has:
 
@@ -414,9 +420,15 @@ spending against whatever partition you gave the buffer — the stock 20 KB `nvs
 makes 16 a comfortable ceiling before NVS has no room left for anything else you keep there.
 Weigh that against how long the device is realistically offline at a stretch: more slots
 survive a longer outage, at the cost of the flash they occupy whether or not they are ever
-used. This is one ring shared by every envelope type with no priority between them, so a
-size chosen too small is what an unrelated high-volume category — Application Metrics
-today, see below — can evict a crash report from.
+used.
+
+This is one ring shared with no priority between entries, oldest evicted first, so what it
+holds matters. **Application Metrics and Logs never enter it.** Both already live in RAM with
+a policy for accumulating across flushes — a counter simply covers a longer interval, and the
+log ring evicts its own oldest line — so when there is no route they are held where they are
+rather than written to flash. Otherwise a disconnected device reporting heap every few minutes
+would fill this ring with gauges and evict the one envelope that genuinely has nowhere else to
+live: the crash report, which is gone from RAM the moment it is built.
 
 Writing your own is five functions (`write`, `read`, `erase`, `load_meta`, `save_meta`) —
 the same vtable pattern as transports, which is what lets the ring logic be host-tested

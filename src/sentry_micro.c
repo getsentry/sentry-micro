@@ -389,6 +389,19 @@ uint32_t sentry_metrics_dropped_count(void) { return g_state.metrics_dropped; }
 #endif /* SENTRY_MICRO_METRICS_ENABLED */
 
 #if SENTRY_MICRO_LOGS_ENABLED
+/**
+ * Add to the lifetime dropped counter, saturating rather than wrapping.
+ *
+ * Lines leave the ring unsent three ways — evicted by a newer line, discarded as a batch
+ * that cannot be encoded, discarded as a batch ingest will never accept — and all three
+ * land here, because from the operator's side they are the same fact: those lines are gone.
+ */
+static void count_logs_dropped(uint32_t lost)
+{
+    g_state.logs_dropped
+        = UINT32_MAX - g_state.logs_dropped < lost ? UINT32_MAX : g_state.logs_dropped + lost;
+}
+
 void sentry_log(sentry_level_t level, const char *message, ...)
 {
     if (!g_state.enabled || !message) {
@@ -413,7 +426,7 @@ void sentry_log(sentry_level_t level, const char *message, ...)
     if (sentry_log_ring_push(&g_state.log_ring, level,
             g_state.trace.active ? g_state.trace.trace_id : "", sentry_device_uptime_us(), body,
             truncated)) {
-        g_state.logs_dropped++;
+        count_logs_dropped(1);
     }
 }
 
@@ -442,6 +455,15 @@ uint32_t sentry_logs_truncated_count(void) { return g_state.logs_truncated; }
 static void flush_logs(void)
 {
     if (sentry_log_ring_empty(&g_state.log_ring)) {
+        return;
+    }
+
+    /* No route: hold the ring rather than serialising into a send that cannot happen. The
+     * ring is self-bounding — oldest-out at SENTRY_MICRO_MAX_LOGS — so holding costs a fixed
+     * 832 bytes of RAM already paid for and touches no flash, which is the whole point. See
+     * the delivery note below for why these never reach the offline buffer. */
+    if (!sentry_transport_is_available(g_state.transport)) {
+        debug_log("holding logs: no route");
         return;
     }
 
@@ -483,21 +505,43 @@ static void flush_logs(void)
          * envelope loop in sentry_flush() already makes for an entry it cannot read, and
          * these lines are counted the way an eviction counts them, because they are gone
          * for the same reason: the ring had no room to carry them any further. */
-        uint32_t lost = g_state.log_ring.count;
-        debug_log("dropping %u logs: need %u bytes, envelope buffer is %u", (unsigned)lost,
-            (unsigned)needed, (unsigned)sizeof(envelope));
-        g_state.logs_dropped
-            = UINT32_MAX - g_state.logs_dropped < lost ? UINT32_MAX : g_state.logs_dropped + lost;
+        debug_log("dropping %u logs: need %u bytes, envelope buffer is %u",
+            (unsigned)g_state.log_ring.count, (unsigned)needed, (unsigned)sizeof(envelope));
+        count_logs_dropped(g_state.log_ring.count);
         sentry_log_ring_reset(&g_state.log_ring);
         return;
     }
 
-    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
-    /* Cleared whether or not the send succeeded, same reasoning as flush_metrics(): a failed
-     * send has already been buffered for retry by sentry_send_envelope() if it was worth
-     * retrying, so keeping the ring too would resend every line on the next flush. */
+    /* deliver() rather than sentry_send_envelope(), which would push a failed batch into the
+     * offline buffer. That buffer exists for envelopes with nowhere else to live — a crash
+     * report is gone from RAM the moment it is built — and this one has somewhere else to
+     * live already. Worse, the buffer is one shared ring with no priority between
+     * categories, so a routeless device that keeps buffering console lines eventually evicts
+     * the crash report it is competing with. Console lines do not get to outrank the thing
+     * this SDK exists to deliver. */
+    sentry_response_t response = deliver((const uint8_t *)envelope, needed);
+    debug_log("sent %u log bytes via %s: result %d, http %u", (unsigned)needed,
+        sentry_transport_name(g_state.transport), (int)response.result,
+        (unsigned)response.http_status);
+
+    if (response.result == SENTRY_SEND_OK) {
+        sentry_log_ring_reset(&g_state.log_ring);
+        return;
+    }
+    if (worth_retrying(response.result)) {
+        /* Held for the next flush, which is only safe because nothing buffered it: the same
+         * lines go out again as part of a larger batch, and the ring's own eviction bounds
+         * how far behind it can fall. */
+        debug_log("holding %u logs for the next flush", (unsigned)g_state.log_ring.count);
+        return;
+    }
+    /* Rejected: ingest understood the batch and will not take it, so holding it would retry
+     * something that can never succeed — the same wedge the size check above avoids, arrived
+     * at from the other direction. */
+    debug_log("dropping %u rejected logs (http %u)", (unsigned)g_state.log_ring.count,
+        (unsigned)response.http_status);
+    count_logs_dropped(g_state.log_ring.count);
     sentry_log_ring_reset(&g_state.log_ring);
-    debug_log("flushed logs: result %d", (int)response.result);
 }
 #endif /* SENTRY_MICRO_LOGS_ENABLED */
 
@@ -514,6 +558,16 @@ static void flush_metrics(void)
     if (sentry_metrics_empty(&g_state.metrics)) {
         return;
     }
+
+    /* No route: hold the table. Unlike the log ring this is not even a loss of resolution —
+     * a counter that keeps accumulating simply covers a longer interval, which is the same
+     * reason the clock check below holds rather than drops. See the delivery note further
+     * down for why these never reach the offline buffer. */
+    if (!sentry_transport_is_available(g_state.transport)) {
+        debug_log("holding metrics: no route");
+        return;
+    }
+
     /* Every metric needs a trace id from the propagation context. Idle is the normal state
      * for a device reporting heap, so one is minted for the batch when nothing is in
      * flight: the numbers correlate with each other and claim nothing about a user action
@@ -540,12 +594,36 @@ static void flush_metrics(void)
         return;
     }
 
-    sentry_response_t response = sentry_send_envelope((const uint8_t *)envelope, needed);
-    /* Cleared whether or not the send succeeded, because sentry_send_envelope() has already
-     * buffered it if it was worth retrying. Keeping the table as well would double-count
-     * every value on the next flush. */
+    /* deliver() rather than sentry_send_envelope(), for the reason spelled out in
+     * flush_logs(): a failed batch would land in the offline buffer, and a disconnected
+     * device reporting heap every few minutes fills that shared ring with gauges until it
+     * evicts a crash report. Numbers that regenerate on their own do not belong in storage
+     * that exists for the one envelope that cannot. */
+    sentry_response_t response = deliver((const uint8_t *)envelope, needed);
+    debug_log("sent %u metric bytes via %s: result %d, http %u", (unsigned)needed,
+        sentry_transport_name(g_state.transport), (int)response.result,
+        (unsigned)response.http_status);
+
+    if (response.result == SENTRY_SEND_OK) {
+        sentry_metrics_reset(&g_state.metrics);
+        return;
+    }
+    if (worth_retrying(response.result)) {
+        /* Held, and specifically not reset: every counter keeps its running total and the
+         * next envelope simply covers a longer interval. Resetting here would silently
+         * discard everything counted since the last successful send. */
+        debug_log("holding metrics for the next flush");
+        return;
+    }
+    /* Rejected: ingest will never take this batch, so holding it would retry forever. The
+     * table is cleared and starts counting again from now.
+     *
+     * Deliberately not counted in sentry_metrics_dropped_count(), which the public header
+     * defines as distinct *names* that did not fit the table — a number that only moves when
+     * firmware uses more than SENTRY_MICRO_MAX_METRICS of them. Folding a rejected batch in
+     * would make that number mean two unrelated things at once. */
+    debug_log("dropping a rejected metrics batch (http %u)", (unsigned)response.http_status);
     sentry_metrics_reset(&g_state.metrics);
-    debug_log("flushed metrics: result %d", (int)response.result);
 }
 #endif /* SENTRY_MICRO_METRICS_ENABLED */
 

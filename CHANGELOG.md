@@ -337,3 +337,16 @@
   envelope it cannot read: the batch is lost, but the pipe never jams. A failure to mint the
   batch's fallback trace id is held rather than dropped, since unlike the size failure that
   batch does encode fine once the RNG answers.
+- Application Metrics and Logs no longer pass through the offline buffer. Both delivered via
+  `sentry_send_envelope()`, which buffers anything `worth_retrying()`, and
+  `SENTRY_SEND_UNAVAILABLE` is on that list — so a device with no route wrote a metrics
+  envelope to flash on every flush interval, and a logs envelope too. That is flash wear for
+  data that regenerates on its own, and worse: the buffer is one shared ring, oldest-out with
+  no priority between categories, so a disconnected device steadily evicted the crash report
+  it was competing with. Both flushes now return early when the transport reports itself
+  unavailable, leaving their in-RAM state untouched, and deliver directly rather than through
+  the buffer. A send that fails for a retryable reason holds the ring/table for the next
+  flush instead of resetting it; one that is rejected outright is dropped, since retrying it
+  can never succeed. Callers no longer need to gate `sentry_flush()` on their own transport
+  availability, and the README no longer suggests gating it on `sentry_buffered_count()`,
+  which never applied to metrics or logs and silently prevented both from ever being sent.
