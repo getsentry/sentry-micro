@@ -54,7 +54,13 @@ typedef struct {
      * when built with SENTRY_MICRO_LOGS_ENABLED=0.
      */
 #if SENTRY_MICRO_LOGS_ENABLED
-    sentry_log_ring_t log_ring;
+    /**
+     * Points at RTC-backed memory when the platform has any, and at g_log_ring_fallback
+     * when it does not. A pointer rather than a member because where this lives is a device
+     * question: the ring has to be *written in place* on every recorded line, since a copy
+     * taken at intervals would lose exactly the lines closest to a crash.
+     */
+    sentry_log_ring_t *log_ring;
     /**
      * Lines evicted from the ring since sentry_init(), persistent across flushes.
      *
@@ -86,6 +92,7 @@ typedef struct {
 } sentry_state_t;
 
 static sentry_state_t g_state;
+
 static sentry_logger_fn g_logger;
 
 static void debug_log(const char *fmt, ...)
@@ -185,6 +192,39 @@ bool sentry_init(const sentry_options_t *options)
     sentry_device_trace_persist(&g_state.trace, sizeof(g_state.trace));
     sentry_throttle_init(
         &g_state.throttle, options->max_messages_per_minute, options->message_repeat_window_ms);
+
+#if SENTRY_MICRO_LOGS_ENABLED
+    /* Claim memory that survives a reset, so the console lines leading up to a panic are
+     * still here to explain it. Whatever was recorded before the reset is still in place;
+     * begin_boot() is what marks it as belonging to a boot that is no longer running, which
+     * is the only reason those lines can still be dated correctly. */
+    bool logs_recovered = false;
+    void *ring_block = sentry_device_persistent_block(
+        sizeof(sentry_log_ring_t), sentry_log_ring_layout_id(), &logs_recovered);
+    if (ring_block) {
+        g_state.log_ring = (sentry_log_ring_t *)ring_block;
+        if (!logs_recovered) {
+            /* Either the first boot after power-on or a layout that no longer matches —
+             * the block is already zeroed, and this makes that a defined ring rather than
+             * merely a blank one. */
+            sentry_log_ring_reset(g_state.log_ring);
+        }
+    } else {
+        /* Deliberately no RAM fallback here. A port that has nowhere to put this returns a
+         * plain static block instead — the ring simply does not survive a reset there — so
+         * reaching this branch means the block could not be sized at all, which on ESP32
+         * means SENTRY_MICRO_MAX_LOGS outgrew SENTRY_RTC_BLOCK_CAP. Carrying a second
+         * whole-ring static in DRAM against that case would cost every build the RAM the
+         * move to RTC memory was meant to give back. */
+        g_state.log_ring = NULL;
+        debug_log("log ring does not fit persistent storage; logging is off this boot");
+    }
+    uint8_t carried = sentry_log_ring_begin_boot(g_state.log_ring);
+    if (carried > 0) {
+        debug_log("recovered %u log lines from the previous boot", (unsigned)carried);
+    }
+#endif
+
     g_state.enabled = true;
 
     debug_log("initialised %s, ingest %s", SENTRY_MICRO_SDK_USER_AGENT, g_state.envelope_url);
@@ -199,7 +239,13 @@ bool sentry_init(const sentry_options_t *options)
     return true;
 }
 
-void sentry_close(void) { memset(&g_state, 0, sizeof(g_state)); }
+void sentry_close(void)
+{
+    /* The log ring is deliberately left as it is. It may live in memory that outlives this
+     * process's idea of itself, and a close() is not a reason to discard lines a later
+     * init() could still report — g_state only forgets where it was. */
+    memset(&g_state, 0, sizeof(g_state));
+}
 
 bool sentry_is_enabled(void) { return g_state.enabled; }
 
@@ -423,7 +469,7 @@ void sentry_log(sentry_level_t level, const char *message, ...)
     /* Recorded verbatim, or empty if nothing is active — resolved to a fallback only at
      * flush time. This is what lets a line written during a real operation stay attached to
      * it even if the operation has ended by the time the ring is serialised. */
-    if (sentry_log_ring_push(&g_state.log_ring, level,
+    if (sentry_log_ring_push(g_state.log_ring, level,
             g_state.trace.active ? g_state.trace.trace_id : "", sentry_device_uptime_us(), body,
             truncated)) {
         count_logs_dropped(1);
@@ -454,14 +500,23 @@ uint32_t sentry_logs_truncated_count(void) { return g_state.logs_truncated; }
  */
 static void flush_logs(void)
 {
-    if (sentry_log_ring_empty(&g_state.log_ring)) {
+    if (sentry_log_ring_empty(g_state.log_ring)) {
         return;
     }
 
+    /* Read the clock first, and record it against the uptime it was read at, before any of
+     * the reasons below to stop. This pairing is what a *later boot* uses to date whatever
+     * these lines turn out to be: after a panic their uptimes belong to a boot that no
+     * longer exists, and without an anchor from that boot there is no way back to real
+     * time. Keeping it current therefore matters most exactly when nothing can be sent —
+     * a device that is offline right up until it crashes is the case worth getting right. */
+    uint64_t now_unix_us = sentry_device_unix_time_us();
+    sentry_log_ring_set_anchor(g_state.log_ring, now_unix_us, sentry_device_uptime_us());
+
     /* No route: hold the ring rather than serialising into a send that cannot happen. The
-     * ring is self-bounding — oldest-out at SENTRY_MICRO_MAX_LOGS — so holding costs a fixed
-     * 832 bytes of RAM already paid for and touches no flash, which is the whole point. See
-     * the delivery note below for why these never reach the offline buffer. */
+     * ring is self-bounding — oldest-out at SENTRY_MICRO_MAX_LOGS — so holding costs RAM
+     * already paid for and touches no flash, which is the whole point. See the delivery
+     * note below for why these never reach the offline buffer. */
     if (!sentry_transport_is_available(g_state.transport)) {
         debug_log("holding logs: no route");
         return;
@@ -470,7 +525,6 @@ static void flush_logs(void)
     /* Every log needs a timestamp, so a device that has not been told the date cannot send
      * yet. Held rather than dropped, same reasoning as metrics: a longer covered interval is
      * still true, unlike a line timestamped to the epoch. */
-    uint64_t now_unix_us = sentry_device_unix_time_us();
     if (now_unix_us == 0) {
         debug_log("holding logs: the device has not been told the date");
         return;
@@ -494,7 +548,7 @@ static void flush_logs(void)
     }
 
     char envelope[SENTRY_MICRO_ENVELOPE_BUFFER_BYTES];
-    size_t needed = sentry_log_envelope_write(envelope, sizeof(envelope), &g_state.log_ring,
+    size_t needed = sentry_log_envelope_write(envelope, sizeof(envelope), g_state.log_ring,
         fallback_trace_id, g_state.device.device_id, sentry_device_uptime_us(), now_unix_us);
     if (needed == 0 || needed >= sizeof(envelope)) {
         /* Too large to encode, and it will be exactly as large on every later flush: what
@@ -506,9 +560,9 @@ static void flush_logs(void)
          * these lines are counted the way an eviction counts them, because they are gone
          * for the same reason: the ring had no room to carry them any further. */
         debug_log("dropping %u logs: need %u bytes, envelope buffer is %u",
-            (unsigned)g_state.log_ring.count, (unsigned)needed, (unsigned)sizeof(envelope));
-        count_logs_dropped(g_state.log_ring.count);
-        sentry_log_ring_reset(&g_state.log_ring);
+            (unsigned)g_state.log_ring->count, (unsigned)needed, (unsigned)sizeof(envelope));
+        count_logs_dropped(g_state.log_ring->count);
+        sentry_log_ring_clear(g_state.log_ring);
         return;
     }
 
@@ -525,23 +579,23 @@ static void flush_logs(void)
         (unsigned)response.http_status);
 
     if (response.result == SENTRY_SEND_OK) {
-        sentry_log_ring_reset(&g_state.log_ring);
+        sentry_log_ring_clear(g_state.log_ring);
         return;
     }
     if (worth_retrying(response.result)) {
         /* Held for the next flush, which is only safe because nothing buffered it: the same
          * lines go out again as part of a larger batch, and the ring's own eviction bounds
          * how far behind it can fall. */
-        debug_log("holding %u logs for the next flush", (unsigned)g_state.log_ring.count);
+        debug_log("holding %u logs for the next flush", (unsigned)g_state.log_ring->count);
         return;
     }
     /* Rejected: ingest understood the batch and will not take it, so holding it would retry
      * something that can never succeed — the same wedge the size check above avoids, arrived
      * at from the other direction. */
-    debug_log("dropping %u rejected logs (http %u)", (unsigned)g_state.log_ring.count,
+    debug_log("dropping %u rejected logs (http %u)", (unsigned)g_state.log_ring->count,
         (unsigned)response.http_status);
-    count_logs_dropped(g_state.log_ring.count);
-    sentry_log_ring_reset(&g_state.log_ring);
+    count_logs_dropped(g_state.log_ring->count);
+    sentry_log_ring_clear(g_state.log_ring);
 }
 #endif /* SENTRY_MICRO_LOGS_ENABLED */
 

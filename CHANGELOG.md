@@ -350,3 +350,29 @@
   can never succeed. Callers no longer need to gate `sentry_flush()` on their own transport
   availability, and the README no longer suggests gating it on `sentry_buffered_count()`,
   which never applied to metrics or logs and silently prevented both from ever being sent.
+- The log ring now survives the crash it exists to explain. It lives in RTC memory via a new
+  `sentry_device_persistent_block()`, which a panic, watchdog or software reset all preserve,
+  so the console lines leading up to a fault are recovered on the next boot and sent with the
+  crash report instead of dying with the RAM that held them. Each line already carried its
+  own `trace_id`, so a recovered line still points at the operation it belonged to. Verified
+  on an ESP32-PICO-D4 against a real `StoreProhibited` panic.
+  - Recovered lines are dated against the boot that recorded them. Uptime restarts at zero on
+    reboot, so the ordinary derivation subtracts a previous boot's large uptime from this
+    boot's tiny one, underflows, clamps, and stamps every recovered line at the flush instant
+    — collapsing the entire pre-crash timeline onto a single point. The ring now carries a
+    wall-clock anchor across the reset and rebases against it. A boot that never learned the
+    date leaves no anchor, and its lines are stamped at the next boot's start instant, which
+    is wrong only in the direction that cannot mislead.
+  - The block is validated by magic word **and** a layout id derived from `MAX_LOGS`,
+    `LOG_BODY_LEN` and both struct sizes. An OTA that changes a compile-time size leaves the
+    same bytes meaning something different, and a magic word alone would validate that
+    happily; a mismatch is treated as no previous boot at all.
+  - `sentry_log_ring_reset()` remains the initialiser; `sentry_log_ring_clear()` is new and
+    empties contents while keeping `boot_seq` and the anchors, which is what a flush needs.
+  - Net effect on DRAM is **-824 B**: `wifi_basic` on `esp32dev` went from 49,924 to 49,100
+    bytes, within a few bytes of the same build with logs compiled out. The cost moved to
+    1,036 B of RTC slow memory, of which the chip has 7,680.
+  - Recording into RTC is slower: `sentry_log_ring_push()` measured 13.2 µs into DRAM against
+    62.0 µs into RTC on an ESP32-PICO-D4 at 240 MHz. `RTC_FAST_ATTR` is not an alternative —
+    `.rtc.force_fast` is a loaded section that does not survive a reset uninitialised, and
+    RTC fast memory is PRO_CPU-only while Arduino runs `loop()` on core 1.

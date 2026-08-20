@@ -196,6 +196,188 @@ static void test_escaping_counts_toward_the_envelope_budget(void)
     TEST_ASSERT_EQUAL_STRING("", envelope);
 }
 
+/* 2026-08-19T00:00:00Z; the previous boot's clock anchor in the recovery tests below. */
+#define PREV_ANCHOR_UNIX_US NOW_UNIX_US
+#define PREV_ANCHOR_UPTIME_US 10000000ULL
+
+static void test_boot_seq_costs_nothing_in_the_entry(void)
+{
+    /* boot_seq has to be free, or persisting the ring would cost RAM per entry on every
+     * build including the ones that never reboot into a recovery. It lands in padding the
+     * struct already carried between trace_id and uptime_us. */
+    TEST_ASSERT_EQUAL_size_t(136, sizeof(sentry_log_entry_t));
+}
+
+static void test_begin_boot_marks_what_survived_and_advances_the_counter(void)
+{
+    sentry_log_ring_t r;
+    sentry_log_ring_reset(&r);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 1000, "before the crash", false);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 2000, "also before", false);
+
+    /* Nothing is recovered while the boot that wrote it is still the one running. */
+    TEST_ASSERT_FALSE(sentry_log_entry_is_recovered(&r, &r.entries[0]));
+
+    TEST_ASSERT_EQUAL_UINT(2, sentry_log_ring_begin_boot(&r));
+    TEST_ASSERT_EQUAL_UINT(1, r.boot_seq);
+    /* The entries are still there — surviving the reset is the whole point — but they now
+     * belong to a boot that is no longer running. */
+    TEST_ASSERT_EQUAL_UINT(2, r.count);
+    TEST_ASSERT_TRUE(sentry_log_entry_is_recovered(&r, &r.entries[0]));
+    TEST_ASSERT_TRUE(sentry_log_entry_is_recovered(&r, &r.entries[1]));
+
+    /* A line recorded now belongs to this boot, in the same ring as the recovered ones. */
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 500, "after the reboot", false);
+    TEST_ASSERT_FALSE(sentry_log_entry_is_recovered(&r, &r.entries[2]));
+}
+
+static void test_clear_keeps_what_describes_the_boot_not_the_batch(void)
+{
+    sentry_log_ring_t r;
+    sentry_log_ring_reset(&r);
+    sentry_log_ring_set_anchor(&r, PREV_ANCHOR_UNIX_US, PREV_ANCHOR_UPTIME_US);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 1000, "sent", false);
+    sentry_log_ring_begin_boot(&r);
+
+    sentry_log_ring_clear(&r);
+
+    /* Contents gone... */
+    TEST_ASSERT_TRUE(sentry_log_ring_empty(&r));
+    /* ...but not the device's sense of which boot it is on or what time it is. A persistent
+     * ring that forgot these on every successful flush could not date the next line. */
+    TEST_ASSERT_EQUAL_UINT(1, r.boot_seq);
+    TEST_ASSERT_EQUAL_UINT64(PREV_ANCHOR_UNIX_US, r.prev_anchor_unix_us);
+    TEST_ASSERT_EQUAL_UINT64(PREV_ANCHOR_UPTIME_US, r.prev_anchor_uptime_us);
+}
+
+static void test_reset_is_the_initialiser_and_forgets_everything(void)
+{
+    sentry_log_ring_t r;
+    sentry_log_ring_reset(&r);
+    sentry_log_ring_set_anchor(&r, PREV_ANCHOR_UNIX_US, PREV_ANCHOR_UPTIME_US);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 1000, "x", false);
+    sentry_log_ring_begin_boot(&r);
+
+    /* The counterpart to clear(): this is what a caller uses to establish a ring in the
+     * first place, and what a persistent ring falls back to when its stored contents cannot
+     * be trusted. Leaving boot_seq or an anchor behind there would date the next line
+     * against a boot that never happened. */
+    sentry_log_ring_reset(&r);
+    TEST_ASSERT_TRUE(sentry_log_ring_empty(&r));
+    TEST_ASSERT_EQUAL_UINT(0, r.boot_seq);
+    TEST_ASSERT_EQUAL_UINT64(0, r.anchor_unix_us);
+    TEST_ASSERT_EQUAL_UINT64(0, r.prev_anchor_unix_us);
+    TEST_ASSERT_EQUAL_UINT64(0, r.prev_anchor_uptime_us);
+}
+
+/*
+ * The regression this whole mechanism exists for.
+ *
+ * Uptime restarts at zero on reboot. Dating a recovered entry the ordinary way subtracts its
+ * (large, previous-boot) uptime from this boot's (tiny) one, underflows, clamps, and stamps
+ * every recovered line at the flush instant — collapsing the entire pre-crash timeline onto
+ * a single point, which is precisely the thing worth keeping.
+ */
+static void test_a_recovered_line_is_dated_against_the_boot_that_recorded_it(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    sentry_log_ring_reset(&r);
+
+    /* Previous boot: clock known at 10 s of uptime, line recorded at 12 s — so two seconds
+     * after the anchor, whatever this boot's clock says later. */
+    sentry_log_ring_set_anchor(&r, PREV_ANCHOR_UNIX_US, PREV_ANCHOR_UPTIME_US);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_ERROR, TRACE, 12000000, "heap 8192, falling", false);
+    sentry_log_ring_begin_boot(&r);
+
+    /* This boot: flushing a minute later, half a second in. */
+    const uint64_t now_unix = NOW_UNIX_US + 60000000ULL;
+    size_t len = sentry_log_envelope_write(
+        buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID, 500000, now_unix);
+    TEST_ASSERT_TRUE(len > 0);
+
+    /* Anchor + 2 s, on the previous boot's timeline. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"timestamp\":1755561602.000000"));
+    /* And emphatically not the flush instant, which is what the old derivation produced. */
+    TEST_ASSERT_NULL(strstr(buf, "\"timestamp\":1755561660.000000"));
+    TEST_ASSERT_NULL(strstr(buf, "\"timestamp\":1755561659.500000"));
+}
+
+static void test_recovered_lines_keep_their_order_and_spacing(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    sentry_log_ring_reset(&r);
+
+    sentry_log_ring_set_anchor(&r, PREV_ANCHOR_UNIX_US, PREV_ANCHOR_UPTIME_US);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 11000000, "wifi disconnected", false);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 13000000, "reconnect failed", false);
+    sentry_log_ring_begin_boot(&r);
+
+    TEST_ASSERT_TRUE(sentry_log_envelope_write(buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID,
+                         500000, NOW_UNIX_US + 60000000ULL)
+        > 0);
+
+    /* A timeline, not a pile: one second and three seconds past the anchor, in that order. */
+    const char *first = strstr(buf, "\"timestamp\":1755561601.000000");
+    const char *second = strstr(buf, "\"timestamp\":1755561603.000000");
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_NOT_NULL(second);
+    TEST_ASSERT_TRUE(first < second);
+}
+
+static void test_a_recovered_line_from_a_clockless_boot_is_dated_before_this_boot(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    sentry_log_ring_reset(&r);
+
+    /* No set_anchor: that boot crashed before it was ever told the date, which is the
+     * normal state of a device that panics early. */
+    sentry_log_ring_push(&r, SENTRY_LEVEL_FATAL, TRACE, 12000000, "about to die", false);
+    sentry_log_ring_begin_boot(&r);
+
+    TEST_ASSERT_TRUE(sentry_log_envelope_write(buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID,
+                         500000, NOW_UNIX_US + 60000000ULL)
+        > 0);
+
+    /* Stamped at this boot's start instant. Wrong, but wrong in the only direction that
+     * cannot mislead: the line really did happen before this boot began. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"timestamp\":1755561659.500000"));
+}
+
+static void test_a_batch_may_mix_recovered_and_current_lines(void)
+{
+    sentry_log_ring_t r;
+    char buf[2048];
+    sentry_log_ring_reset(&r);
+
+    sentry_log_ring_set_anchor(&r, PREV_ANCHOR_UNIX_US, PREV_ANCHOR_UPTIME_US);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_ERROR, TRACE, 12000000, "before the crash", false);
+    sentry_log_ring_begin_boot(&r);
+    sentry_log_ring_push(&r, SENTRY_LEVEL_INFO, TRACE, 400000, "after the reboot", false);
+
+    const uint64_t now_unix = NOW_UNIX_US + 60000000ULL;
+    TEST_ASSERT_TRUE(
+        sentry_log_envelope_write(buf, sizeof(buf), &r, FALLBACK_TRACE, DEVICE_ID, 500000, now_unix)
+        > 0);
+
+    /* Each line dated on its own boot's timeline, in one envelope: the recovered one two
+     * seconds past the old anchor, the new one 100 ms before this flush. */
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"timestamp\":1755561602.000000"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "\"timestamp\":1755561659.900000"));
+}
+
+static void test_the_layout_id_is_stable_and_not_trivial(void)
+{
+    /* Read back by whatever firmware boots next, which after an OTA need not be the firmware
+     * that wrote the ring. Same build must agree with itself... */
+    TEST_ASSERT_EQUAL_UINT32(sentry_log_ring_layout_id(), sentry_log_ring_layout_id());
+    /* ...and the value must not be a degenerate constant that would validate anything. */
+    TEST_ASSERT_NOT_EQUAL_UINT32(0, sentry_log_ring_layout_id());
+    TEST_ASSERT_NOT_EQUAL_UINT32(0xffffffffu, sentry_log_ring_layout_id());
+}
+
 static void test_an_overlong_body_is_truncated_not_dropped(void)
 {
     sentry_log_ring_t r;
@@ -492,6 +674,15 @@ int main(void)
     RUN_TEST(test_entries_serialise_oldest_first);
     RUN_TEST(test_a_full_ring_of_worst_case_entries_fits_the_envelope_budget);
     RUN_TEST(test_escaping_counts_toward_the_envelope_budget);
+    RUN_TEST(test_boot_seq_costs_nothing_in_the_entry);
+    RUN_TEST(test_begin_boot_marks_what_survived_and_advances_the_counter);
+    RUN_TEST(test_clear_keeps_what_describes_the_boot_not_the_batch);
+    RUN_TEST(test_reset_is_the_initialiser_and_forgets_everything);
+    RUN_TEST(test_a_recovered_line_is_dated_against_the_boot_that_recorded_it);
+    RUN_TEST(test_recovered_lines_keep_their_order_and_spacing);
+    RUN_TEST(test_a_recovered_line_from_a_clockless_boot_is_dated_before_this_boot);
+    RUN_TEST(test_a_batch_may_mix_recovered_and_current_lines);
+    RUN_TEST(test_the_layout_id_is_stable_and_not_trivial);
     RUN_TEST(test_an_overlong_body_is_truncated_not_dropped);
     RUN_TEST(test_recorded_trace_id_wins_over_the_fallback);
     RUN_TEST(test_an_idle_recorded_line_falls_back_to_the_batch_trace);

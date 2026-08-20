@@ -98,6 +98,31 @@ void sentry_device_trace_persist(const void *bytes, size_t len);
  */
 void sentry_device_trace_recover(void *out, size_t len);
 
+/**
+ * Borrow a block of memory that survives a panic reset, to be written in place.
+ *
+ * The difference from `sentry_device_trace_persist()` is lifetime, not storage: a trace
+ * context is copied in at known moments and can afford to be, whereas a log ring is written
+ * on every recorded line and has to *live* here — a copy taken at intervals would lose
+ * exactly the lines closest to the crash, which are the ones worth keeping.
+ *
+ * `layout_id` is what makes reading it back safe. The firmware that reads this block is not
+ * necessarily the firmware that wrote it: an OTA can change a compile-time size and leave
+ * the same bytes meaning something different, and a magic word alone would validate that
+ * happily. A mismatch is treated exactly like no previous boot at all.
+ *
+ * A port with no memory that survives a reset should still return a block — an ordinary
+ * static will do — and simply never report a recovery. That keeps the "where do logs live"
+ * question entirely inside the device layer, so the portable core does not carry a second
+ * whole-ring buffer in RAM for a case most ports do not have. NULL is reserved for `bytes`
+ * being more than the port can supply at all, and turns logging off for the boot.
+ *
+ * `*recovered` is set true only when the block came back intact from a previous boot; when
+ * false the block has been zeroed, so the caller can rely on it being clean rather than
+ * holding whatever happened to be in that memory at power-on.
+ */
+void *sentry_device_persistent_block(size_t bytes, uint32_t layout_id, bool *recovered);
+
 #ifdef __cplusplus
 }
 #endif

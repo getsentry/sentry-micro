@@ -214,6 +214,57 @@ void sentry_device_trace_persist(const void *bytes, size_t len)
     g_rtc_trace.magic = SENTRY_RTC_TRACE_MAGIC;
 }
 
+/**
+ * Storage for the one caller that needs to live in RTC memory rather than visit it.
+ *
+ * Sized to hold a log ring at generous defaults with room to grow; the ring at the shipped
+ * defaults is well under this. Costs RTC slow memory unconditionally on ESP32, which is the
+ * honest price of a ring that survives a panic — there are 7,680 bytes available there
+ * (`memory.ld`: `rtc_slow_seg` is `0x2000 - 512`, the first 512 reserved for the ULP), and
+ * `g_rtc_trace` above is the only other claim on them.
+ */
+#ifndef SENTRY_RTC_BLOCK_CAP
+#    define SENTRY_RTC_BLOCK_CAP 1024
+#endif
+#define SENTRY_RTC_BLOCK_MAGIC 0x53424c4bu /* "SBLK" */
+
+RTC_NOINIT_ATTR static struct {
+    uint32_t magic;
+    uint32_t layout_id;
+    uint32_t len;
+    uint8_t bytes[SENTRY_RTC_BLOCK_CAP];
+} g_rtc_block;
+
+void *sentry_device_persistent_block(size_t bytes, uint32_t layout_id, bool *recovered)
+{
+    if (recovered) {
+        *recovered = false;
+    }
+    if (bytes == 0 || bytes > sizeof(g_rtc_block.bytes)) {
+        /* Nowhere to put it. The caller keeps its ring in ordinary RAM and loses it on a
+         * reset, which is worse but not wrong — and far better than handing back a block
+         * too small and letting it be written past. */
+        return NULL;
+    }
+
+    /* All three have to agree. The magic word alone answers "did somebody store something
+     * here", which on its own is exactly the question that misleads after an OTA: the bytes
+     * are real, they are simply a different shape now. */
+    if (g_rtc_block.magic == SENTRY_RTC_BLOCK_MAGIC && g_rtc_block.layout_id == layout_id
+        && g_rtc_block.len == (uint32_t)bytes) {
+        if (recovered) {
+            *recovered = true;
+        }
+        return g_rtc_block.bytes;
+    }
+
+    memset(g_rtc_block.bytes, 0, bytes);
+    g_rtc_block.magic = SENTRY_RTC_BLOCK_MAGIC;
+    g_rtc_block.layout_id = layout_id;
+    g_rtc_block.len = (uint32_t)bytes;
+    return g_rtc_block.bytes;
+}
+
 void sentry_device_trace_recover(void *out, size_t len)
 {
     if (!out || len == 0) {

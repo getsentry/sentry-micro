@@ -76,6 +76,17 @@ typedef struct {
     /** Whether `body` is shorter than what was actually meant to be logged. */
     bool truncated;
     bool used;
+    /**
+     * Which boot recorded this line, from the ring's own counter.
+     *
+     * Only meaningful for a ring in memory that outlives a reset. `uptime_us` is measured
+     * from *a* boot, and after a reboot there is no longer any way to tell from the number
+     * itself which one — an entry from the previous boot has a large uptime that would be
+     * read against this boot's much smaller one, which is not merely imprecise but
+     * backwards. This is what distinguishes the two cases. It costs nothing: it lands in
+     * padding the struct already had, so sizeof(sentry_log_entry_t) is unchanged.
+     */
+    uint8_t boot_seq;
 } sentry_log_entry_t;
 
 typedef struct {
@@ -85,10 +96,86 @@ typedef struct {
     uint8_t count;
     /** Entries evicted to make room before they were ever sent. Reported, never silent. */
     uint16_t dropped;
+    /**
+     * Which boot this ring is currently recording. Advanced by sentry_log_ring_begin_boot().
+     *
+     * Wraps at 256, which is harmless: only equality against an entry's own `boot_seq`
+     * matters, and an entry surviving 256 reboots without being sent is not a case worth
+     * carrying a wider counter for.
+     */
+    uint8_t boot_seq;
+    /**
+     * Wall clock for this boot, paired with the uptime it was read at. Zero until the
+     * device has been told the date — which is normal for a long stretch after boot, and
+     * exactly why entries record uptime rather than wall time in the first place.
+     */
+    uint64_t anchor_unix_us;
+    uint64_t anchor_uptime_us;
+    /**
+     * The same pair, belonging to the boot that recorded whatever entries survived into
+     * this one. Carried across the reset by sentry_log_ring_begin_boot() so a recovered
+     * line can still be placed on a real timeline rather than collapsed onto "now".
+     *
+     * Zero when that boot never learned the date, in which case a recovered entry cannot be
+     * dated better than "before this boot started" — see sentry_log_entry_unix_us().
+     */
+    uint64_t prev_anchor_unix_us;
+    uint64_t prev_anchor_uptime_us;
 } sentry_log_ring_t;
 
-/** Empty the ring. */
+/**
+ * Put the ring into a known-empty state, contents and boot bookkeeping alike.
+ *
+ * This is the initialiser: a ring in ordinary memory starts as whatever its storage held,
+ * and a persistent ring whose contents failed validation has to be brought to the same
+ * place. Use sentry_log_ring_clear() instead after a successful flush — that keeps the
+ * bookkeeping, which is the difference that matters to a ring that outlives a reset.
+ */
 void sentry_log_ring_reset(sentry_log_ring_t *ring);
+
+/**
+ * Empty the ring's contents, keeping what describes the boot rather than the batch.
+ *
+ * `boot_seq` and both anchors survive: they are facts about which boot is running and what
+ * time it is, not about the lines just sent. A persistent ring that forgot them on every
+ * successful flush could not date the next line it recorded.
+ */
+void sentry_log_ring_clear(sentry_log_ring_t *ring);
+
+/**
+ * Declare that a new boot has started, so entries already in the ring are understood as
+ * having come from the previous one.
+ *
+ * Only meaningful for a ring in memory that survives a reset; a ring in ordinary RAM starts
+ * empty and calling this is simply harmless. Advances `boot_seq` and moves this boot's
+ * anchor into the `prev_` slot, which is what lets a recovered line be dated against the
+ * clock the boot that wrote it actually had.
+ *
+ * Returns how many entries were carried in from the previous boot.
+ */
+uint8_t sentry_log_ring_begin_boot(sentry_log_ring_t *ring);
+
+/**
+ * Record what the wall clock reads at a known uptime, so entries can be dated.
+ *
+ * Cheap enough to call on every flush and pointless to call per line: one pair describes
+ * the whole boot, since uptime and wall clock advance together.
+ */
+void sentry_log_ring_set_anchor(sentry_log_ring_t *ring, uint64_t unix_us, uint64_t uptime_us);
+
+/** Whether this entry was recorded by a boot other than the one the ring is now on. */
+bool sentry_log_entry_is_recovered(const sentry_log_ring_t *ring, const sentry_log_entry_t *entry);
+
+/**
+ * A stable identifier for the on-memory layout of this ring.
+ *
+ * A persistent ring is read back by whatever firmware boots next, which after an OTA is not
+ * necessarily the firmware that wrote it. `SENTRY_MICRO_MAX_LOGS` and
+ * `SENTRY_MICRO_LOG_BODY_LEN` are build flags, so the same bytes can mean two different
+ * things across an update, and a magic word alone would happily validate the wrong stride.
+ * Storing this alongside the ring and refusing a mismatch is what makes that safe.
+ */
+uint32_t sentry_log_ring_layout_id(void);
 
 /**
  * Record one line, evicting the oldest entry first if the ring is already full.

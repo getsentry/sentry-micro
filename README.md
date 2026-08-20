@@ -831,6 +831,25 @@ computed from `vsnprintf()`'s own return value, not predicted at compile time, a
 two ways: `sentry_logs_truncated_count()` since init, and a per-line `t7d` attribute
 (present only when true) once the line reaches Sentry.
 
+**The ring survives the crash it would explain.** It lives in RTC memory
+(`RTC_NOINIT_ATTR`), which a panic, a watchdog and a software reset all preserve — so the
+lines leading up to a `StoreProhibited` are still there on the next boot and go out with the
+crash report, rather than dying with the RAM that held them. Each line also kept its own
+`trace_id` from when it was recorded, so a recovered line still points at the operation it
+belonged to.
+
+Two things that follows from, both worth knowing:
+
+- **A power cycle or a deep brownout clears it.** RTC memory is preserved across a reset, not
+  across losing power. A panic or watchdog reboot — the WLED "reboots every few minutes" case
+  — keeps its lines; pulling the plug does not. Absence is normal, not an error.
+- **Recovered lines are dated against the boot that wrote them.** Uptime restarts at zero on
+  reboot, so the ordinary derivation would stamp every recovered line at the moment of the
+  flush and collapse the whole pre-crash timeline onto a single instant. Instead the SDK
+  records a wall-clock anchor as it runs and carries it across the reset. If that boot never
+  learned the date there is no anchor, and the lines are stamped at this boot's start
+  instant — still wrong, but wrong in the only direction that cannot mislead.
+
 The ring holds `SENTRY_MICRO_MAX_LOGS` lines (6 by default) and evicts the oldest once
 full — unlike the metrics table, there is no running total to protect here, so the newest
 line displacing the old one is the right trade for a continuous stream.
@@ -849,8 +868,23 @@ as dropped and the reason is reported through `sentry_set_logger()`.
 
 | | |
 | --- | --- |
-| Permanent RAM | **832 B** at the defaults (`sentry_log_ring_t`: 6 × 136-byte entries) |
+| DRAM | **~0** — the ring no longer lives here. `g_state` keeps a pointer to it |
+| RTC slow memory | **1,036 B** at the defaults: an 824-byte `sentry_log_ring_t` inside a 1 KB block with a 12-byte validation header. ESP32 has 7,680 B of it (`memory.ld` reserves the first 512 for the ULP), and the persisted trace context is the only other claim on them |
 | Flash, always linked | ~1.5 KB — `flush_logs()` runs on every `sentry_flush()`, whether or not the firmware ever calls `sentry_log()` |
+
+Moving the ring into RTC memory **gave back 824 bytes of DRAM**: measured on `esp32dev`,
+`wifi_basic` went from 49,924 B to 49,100 B, which is within a few bytes of what the same
+build cost with logs compiled out entirely. Logs are now close to free in the memory that
+firmware actually competes for, and cost RTC memory that nothing else was using.
+
+The RTC block is claimed by the device layer whether or not logs are compiled in, so
+`SENTRY_MICRO_LOGS_ENABLED=0` returns the flash but not those 1,036 B of RTC.
+
+Recording is also slower there, which is the real trade. Measured on an ESP32-PICO-D4 at
+240 MHz, `sentry_log_ring_push()` costs **13.2 µs into DRAM against 62.0 µs into RTC slow
+memory** — RTC is ~35× slower for a bulk write and ~19× for a read. That is a per-line cost
+paid only by firmware that logs; it is well clear of anything that matters outside a tight
+render loop, and if you do log from one, that is the number to weigh.
 
 Unlike a transaction, this is not opt-in by usage: the ring is a permanent `g_state` field,
 because a log line — like a metric — has to survive across flushes rather than living on a
