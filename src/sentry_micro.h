@@ -36,6 +36,7 @@
 #include "core/sentry_buffer.h"
 #include "core/sentry_dsn.h"
 #include "core/sentry_envelope.h"
+#include "core/sentry_log.h"
 #include "core/sentry_metrics.h"
 #include "core/sentry_span.h"
 #include "core/sentry_throttle.h"
@@ -432,6 +433,42 @@ void sentry_metric_gauge(const char *name, int64_t value, const char *unit);
  * entirely rather than merely coarse.
  */
 uint32_t sentry_metrics_dropped_count(void);
+
+/**
+ * Record one console line — a mirror of the serial output for a device with no cable
+ * attached.
+ *
+ *     sentry_log(SENTRY_LEVEL_WARNING, "WiFi reconnect attempt %u", attempt);
+ *
+ * **This does not send.** Same shape as `sentry_metric_count()`/`sentry_metric_gauge()`: it
+ * writes into a fixed ring and returns, and the ring rides the next `sentry_flush()` — the
+ * property that makes it safe to call from a hot path a transaction cannot afford to trace.
+ *
+ * Unlike a metric, each line remembers whatever trace was active when it was recorded: a
+ * line written during a real operation is attached to that operation, the same way a
+ * breadcrumb would be, rather than to whatever is active (or nothing) by the time the ring
+ * happens to flush. A line recorded while idle is still held and still sent — logging the
+ * console is the point even when nothing else is going on — just without that attachment.
+ *
+ * `message` is formatted (printf-style) into a fixed buffer and truncated to fit; formatting
+ * a message that is about to be truncated is cheaper than growing the ring to avoid it.
+ *
+ * The ring holds `SENTRY_MICRO_MAX_LOGS` lines and evicts the oldest once full — unlike the
+ * metrics table, there is no running total to protect here, so the newest line displacing
+ * the oldest is the right trade for a continuous stream.
+ *
+ * `message` is sent to Sentry like any other log line — do not put a DSN, WiFi password, or
+ * anything else secret into it, the same rule as any logging call.
+ */
+void sentry_log(sentry_level_t level, const char *message, ...);
+
+/**
+ * Lines dropped because the ring was full, since `sentry_init()`.
+ *
+ * Moves whenever logging outpaces `sentry_flush()`'s cadence — the ring is short by design,
+ * so a chatty stretch between flushes is expected to cost old lines, not a bug.
+ */
+uint32_t sentry_logs_dropped_count(void);
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.
