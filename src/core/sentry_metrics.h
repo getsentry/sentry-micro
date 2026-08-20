@@ -26,6 +26,25 @@
 
 #include "sentry_boot.h"
 
+/**
+ * Compile the SDK's metrics table in (1, the default) or out (0).
+ *
+ * The table below costs nothing on its own — plain functions over a struct you would own,
+ * the same as a span. What costs something unconditionally is `sentry_micro.c`'s singleton:
+ * it carries one `sentry_metrics_t` (roughly 250 bytes at the defaults) as a permanent
+ * `g_state` field, paid in every build whether or not firmware ever calls
+ * `sentry_metric_count()` / `sentry_metric_gauge()`. Setting this to 0 removes that field
+ * along with those two functions and `sentry_metrics_dropped_count()`, so a build that never
+ * counts anything does not carry the table that would have held it.
+ *
+ * This header's own table type stays available either way.
+ *
+ *     build_flags = -D SENTRY_MICRO_METRICS_ENABLED=0
+ */
+#ifndef SENTRY_MICRO_METRICS_ENABLED
+#    define SENTRY_MICRO_METRICS_ENABLED 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

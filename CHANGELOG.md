@@ -317,3 +317,12 @@
   redefines that macro unconditionally after the command line and wins. `wifi_basic` now
   overrides Arduino-ESP32's own `getArduinoLoopTaskStackSize()` `weak` hook instead, raising
   the stack to 16 KB.
+- `SENTRY_MICRO_LOGS_ENABLED=0` and `SENTRY_MICRO_METRICS_ENABLED=0` remove the log ring and
+  metrics table entirely, the same pattern `SENTRY_MICRO_WIFI_TLS=0` already uses for the
+  TLS branch. Unlike a transaction's spans, both tables are permanent `g_state` fields —
+  a metric or a log line has to survive across flushes rather than living on a caller's
+  stack for one operation — so they cost RAM whether or not firmware ever calls them, with
+  no way before this to get it back. Measured on `esp32dev`: 832 B RAM / 1,496 B flash for
+  logs, 272 B RAM / 1,140 B flash for metrics, on a build that never calls either. Disabled
+  functions are not declared at all rather than becoming no-ops, so a build that turns a
+  feature off and still calls it fails to compile instead of silently doing nothing.

@@ -412,7 +412,11 @@ sentry_response_t sentry_transaction_finish(sentry_transaction_t *txn);
  * told the date the table keeps accumulating and nothing is sent — a counter covering a
  * longer interval is still true, which is why these are held rather than dropped the way a
  * transaction's stale duration would be.
+ *
+ * Not declared when built with `SENTRY_MICRO_METRICS_ENABLED=0` — see that macro in
+ * `core/sentry_metrics.h`.
  */
+#if SENTRY_MICRO_METRICS_ENABLED
 void sentry_metric_count(const char *name, int64_t delta, const char *unit);
 
 /**
@@ -433,6 +437,7 @@ void sentry_metric_gauge(const char *name, int64_t value, const char *unit);
  * entirely rather than merely coarse.
  */
 uint32_t sentry_metrics_dropped_count(void);
+#endif /* SENTRY_MICRO_METRICS_ENABLED */
 
 /**
  * Record one console line — a mirror of the serial output for a device with no cable
@@ -463,7 +468,11 @@ uint32_t sentry_metrics_dropped_count(void);
  *
  * `message` is sent to Sentry like any other log line — do not put a DSN, WiFi password, or
  * anything else secret into it, the same rule as any logging call.
+ *
+ * Not declared when built with `SENTRY_MICRO_LOGS_ENABLED=0` — see that macro in
+ * `core/sentry_log.h`.
  */
+#if SENTRY_MICRO_LOGS_ENABLED
 void sentry_log(sentry_level_t level, const char *message, ...);
 
 /**
@@ -479,6 +488,7 @@ uint32_t sentry_logs_dropped_count(void);
  * the line itself for which one, once it reaches Sentry.
  */
 uint32_t sentry_logs_truncated_count(void);
+#endif /* SENTRY_MICRO_LOGS_ENABLED */
 
 /**
  * Report a message — the ordinary, non-crash way to tell Sentry something happened.

@@ -19,6 +19,27 @@
 #include "sentry_envelope.h" /* sentry_level_t */
 #include "sentry_trace.h" /* SENTRY_MICRO_TRACE_ID_LEN */
 
+/**
+ * Compile the SDK's log ring in (1, the default) or out (0).
+ *
+ * The ring below costs nothing on its own — these are plain functions over a struct you
+ * would own, the same as a span. What costs something unconditionally is
+ * `sentry_micro.c`'s singleton: it carries one `sentry_log_ring_t` (roughly 800 bytes at the
+ * defaults) as a permanent `g_state` field, paid in every build whether or not firmware ever
+ * calls `sentry_log()`, because nothing else there is optional either. Setting this to 0
+ * removes that field along with `sentry_log()`, `sentry_logs_dropped_count()` and
+ * `sentry_logs_truncated_count()`, so a build that does not want the console mirrored does
+ * not carry the ring that would have held it.
+ *
+ * This header's own ring type stays available either way — a caller who wants a log ring
+ * with different lifetime than the singleton's can still build one directly.
+ *
+ *     build_flags = -D SENTRY_MICRO_LOGS_ENABLED=0
+ */
+#ifndef SENTRY_MICRO_LOGS_ENABLED
+#    define SENTRY_MICRO_LOGS_ENABLED 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
