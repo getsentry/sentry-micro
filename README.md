@@ -260,15 +260,15 @@ rejected, and redirects are disabled so a `302` cannot move the auth header some
 until you supply a root:
 
 ```cpp
-transport.set_ca_cert(ISRG_ROOT_X1_PEM);
+transport.set_ca_cert(SENTRY_INGEST_CA_CERT);
 ```
 
 That is not a default because pinning a root that later expires bricks reporting on every
 deployed device simultaneously, and a maker with no CI has no way to push a new one. The
 trade belongs to whoever ships the firmware, so the SDK makes it explicit and logs a warning
 the first time it sends without one. The example turns this on out of the box — it ships the
-ISRG Root X1 cert in [`certs.h`](examples/wifi_basic/src/certs.h), which verifies the public
-Sentry cloud — and swaps in a different root only if you self-host.
+DigiCert Global Root G2 cert in [`certs.h`](examples/wifi_basic/src/certs.h), which verifies
+the public Sentry cloud — and swaps in a different root only if you self-host.
 
 **Do not call a TLS transport from a panic handler.** mbedTLS allocates several KB during a
 handshake and the heap is exactly what you cannot trust right after a crash. The design does
@@ -968,8 +968,6 @@ Built but never exercised on hardware, which is worth knowing before trusting th
 
 - The RISC-V coredump reader compiles and matches the ESP-IDF struct, but has never run —
   there is no C-series board here.
-- TLS certificate verification. `WiFiTransport` runs with it off unless you call
-  `set_ca_cert()`, and nobody has yet run it with a real certificate pinned.
 - Every board except the classic ESP32. The S2, S3, C3 and C6 are covered by compilation
   only.
 
