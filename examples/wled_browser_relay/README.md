@@ -240,6 +240,59 @@ A production usermod would want neither override: it needs an upstream WLED plat
 coredump-to-flash enabled and a partition table that reserves 64K. Both are one-line changes
 in WLED, and they are the conversation this demo exists to start.
 
+## What a crash looks like when it arrives
+
+Verified end to end on an ESP32-PICO-D4 (4MB), phone joined to the device's own `WLED-AP`
+with the POST going out over cellular. `abort()` three frames deep in the usermod:
+
+```
+IllegalInstruction: in loopTask
+
+  0x4008eaa4  vPortTaskWrapper                             port.c:138
+  0x4015733f  loopTask                                     main.cpp:80
+  0x401279e1  loop                                         wled_main.cpp:23
+  0x4012740b  WLED::loop                                   wled.cpp:103
+  0x40123971  UsermodManager::loop                         um_manager.cpp:23
+  0x400d2df4  UsermodSentry::loop                          usermod_sentry.cpp:218
+  0x400d2846  (anonymous namespace)::sentryDemoCrashOuter      usermod_sentry.cpp:142
+  0x400d283e  (anonymous namespace)::sentryDemoCrashMiddle     usermod_sentry.cpp:141
+  0x400d2836  (anonymous namespace)::sentryDemoCrashInnermost  usermod_sentry.cpp:140
+  0x40094898  abort                                        abort.c:38
+  0x4008de8c  esp_system_abort                              esp_system_chip.c:86
+  0x4008dec8  panic_abort                                  panic.c:477
+```
+
+Functions, files and line numbers, from FreeRTOS's task wrapper through WLED's own `loop()`
+into the usermod and down into the panic handler — recovered from a 64K coredump partition on
+the *following* boot, then carried over a browser tab. Inlined frames come back too (a
+`std::atomic::store` chain, elided here, resolves at the same address as its caller).
+
+The event carries the rest of what you would want: release, `environment`, device model and
+architecture, heap total/free, flash size, chip revision, uptime, `esp-idf v5.5.4`, and a
+trace id.
+
+### In-app frames
+
+Out of the box every frame is marked not-in-app, so Sentry blames nobody and the issue
+culprit stays empty. `scripts/release.sh` prints suggested stack-trace rules at the end of a
+run, but they are derived from *your* build directory — and `abs_path` in native debug info is
+whatever absolute path the compiler saw, so those rules stop working the moment somebody
+builds the same firmware from a different checkout.
+
+These are equivalent and machine-independent. Settings → Projects → *your project* →
+Processing → Stack Trace Rules:
+
+```
+family:native -app
+stack.abs_path:**/wled00/** +app
+stack.abs_path:**/usermods/sentry/** +app
+```
+
+The blanket `-app` first is deliberate: suspect commits blames the first in-app frame, and a
+newlib or ESP-IDF frame counting as yours would blame a file you do not have. (Those arrive
+with paths like `/home/runner/work/esp32-arduino-lib-builder/...` — the machine that built the
+prebuilt core, not yours.)
+
 ## Using the device's own access point
 
 An unconfigured WLED opens `WLED-AP` and serves everything from `4.3.2.1`. The relay page
