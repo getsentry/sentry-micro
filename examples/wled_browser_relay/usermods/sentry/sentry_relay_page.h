@@ -141,10 +141,20 @@ function renderStatus(st) {
 }
 
 async function refreshStatus() {
+  var res;
   try {
-    renderStatus(await (await fetch("/sentry/status", { cache: "no-store" })).json());
+    res = await fetch("/sentry/status", { cache: "no-store" });
   } catch (err) {
     setRelayState("bad", "device unreachable");
+    return;
+  }
+  try {
+    renderStatus(await res.json());
+  } catch (err) {
+    /* Reachable, but not answering with what /sentry/status is supposed to answer with.
+       Naming that separately is what turns "the device is down" into "the route is wrong". */
+    setRelayState("bad", "status route is not returning JSON");
+    log("/sentry/status did not return JSON (HTTP " + res.status + ")", "e");
   }
 }
 
@@ -270,7 +280,33 @@ function onFrame(f) {
 
 var wasDown = false;
 
+/* One poll at a time. setInterval() does not wait for the previous call, and a poll that
+   outlives its interval (a slow cellular POST to Sentry sits inside the same tick) would
+   otherwise overlap with the next one. Both would drain the device's queue, and their
+   responses could arrive out of order — delivering DATA frames before the BEGIN that sizes
+   the buffer for them, which drops the request and costs a 20-second device-side timeout. */
+var polling = false;
+
+function markDown(why) {
+  if (wasDown) return;
+  wasDown = true;
+  pending = null;   /* a half-received request cannot be completed across a reboot */
+  setRelayState("warn", "device unreachable - retrying");
+  log("device unreachable (rebooting after a crash?): " + why, "y");
+}
+
 async function poll() {
+  if (polling) return;
+  polling = true;
+  try {
+    await pollOnce();
+  } finally {
+    polling = false;
+  }
+}
+
+async function pollOnce() {
+  var text;
   try {
     /* The HELLO frame is folded into the poll's query string rather than sent as its own
        round-trip: on this link every poll is already the host announcing itself, and doing
@@ -279,11 +315,22 @@ async function poll() {
     var res = await fetch("/sentry/relay/poll?v=" + PROTOCOL_VERSION + "&chunk=" + MAX_CHUNK,
                           { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    if (wasDown) { wasDown = false; log("device back", "g"); refreshStatus(); }
+    text = (await res.text()).trim();
+  } catch (err) {
+    markDown(err);
+    return;
+  }
 
-    var text = (await res.text()).trim();
-    if (!text) return;
+  if (wasDown) { wasDown = false; log("device back", "g"); refreshStatus(); }
+  if (!text) return;
 
+  /* Parsed in its own try, NOT the one above. Folding the two together is a real trap and
+     cost a debugging session: a route misconfigured on the device answered every poll with
+     the HTML of this very page, `atob()` threw on it, and the single catch reported it as
+     "device unreachable" once a second — a transport symptom for a routing bug. A parse
+     failure means the device answered and we could not read it, which is the opposite of
+     unreachable, so it says so and shows what it actually got. */
+  try {
     /* The device concatenates its queued frames as [len u16][frame...] repeated, base64 of
        the whole thing. HTTP gives us no packet boundaries, so the link supplies its own —
        exactly the job a BLE notification does for free on the other transport. */
@@ -296,12 +343,8 @@ async function poll() {
       off += len;
     }
   } catch (err) {
-    if (!wasDown) {
-      wasDown = true;
-      pending = null;   /* a half-received request cannot be completed across a reboot */
-      setRelayState("warn", "device unreachable - retrying");
-      log("device unreachable (rebooting after a crash?)", "y");
-    }
+    log("poll returned something that is not base64 frames: " +
+        JSON.stringify(text.slice(0, 60)) + (text.length > 60 ? "..." : ""), "e");
   }
 }
 

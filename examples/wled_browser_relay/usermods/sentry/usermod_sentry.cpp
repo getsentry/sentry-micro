@@ -282,12 +282,22 @@ private:
 
     /* ---- HTTP ------------------------------------------------------------------------ */
 
+    /**
+     * ORDER IS LOAD-BEARING HERE.
+     *
+     * This AsyncWebServer matches a handler's URI as a *prefix*, not an exact path — see
+     * AsyncCallbackWebHandler::canHandle(), which accepts when `_uri == url` **or**
+     * `url.startsWith(_uri + "/")` — and it dispatches to the first handler that accepts.
+     * So a handler on "/sentry" registered first claims "/sentry/status",
+     * "/sentry/relay/poll" and every other route below it, and they all quietly return the
+     * HTML page instead. Every fetch then fails inside the page's own JSON/base64 parsing,
+     * which reads exactly like a device that is not responding.
+     *
+     * The specific routes therefore go first and the page goes last. WLED's own
+     * initServer() does the same thing with "/", for the same reason.
+     */
     void registerRoutes()
     {
-        server.on("/sentry", HTTP_GET, [](AsyncWebServerRequest *request) {
-            request->send_P(200, "text/html", SENTRY_RELAY_PAGE);
-        });
-
         server.on("/sentry/status", HTTP_GET,
             [this](AsyncWebServerRequest *request) { request->send(200, "application/json", statusJson()); });
 
@@ -315,6 +325,20 @@ private:
              * immediately instead of after the 500ms the response needs to flush. */
             crashAtMs_ = millis() + 500;
             crashPending_ = true;
+        });
+
+        /* Last, and guarded — see the ordering note above. The guard costs nothing and is
+         * not defensive programming for its own sake: if a future route is added below this
+         * one, it will be shadowed, and a 404 that names the reason is a great deal easier
+         * to act on than a page served where JSON was expected. */
+        server.on("/sentry", HTTP_GET, [](AsyncWebServerRequest *request) {
+            if (request->url() != "/sentry") {
+                request->send(404, "text/plain",
+                    "No such route. Note that handlers registered before this one shadow it "
+                    "by prefix — see registerRoutes().\n");
+                return;
+            }
+            request->send_P(200, "text/html", SENTRY_RELAY_PAGE);
         });
     }
 
