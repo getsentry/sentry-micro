@@ -12,34 +12,41 @@
  * relay transport (src/transport/sentry_transport_relay.hpp), which chunks a finished HTTP
  * request — URL, two header values, envelope body — over any link that moves short packets
  * both ways, and waits for the host on the other end to report what happened. That link is
- * usually a phone over BLE. Here it is a browser over HTTP: the device serves a page
- * (sentry_relay_page.h) that polls for queued frames and performs the POST with `fetch()`.
- * The user's browser already has a TLS stack, a CA store and an internet connection; this
- * borrows all three for the length of one request.
+ * usually a phone over BLE. Here it is the WLED web UI: `wled_ui_relay.js` (alongside this
+ * file, appended to WLED's own index.js) polls the routes below and performs the POST. The
+ * browser already has a TLS stack, a CA store and an internet connection, and this borrows
+ * all three for the length of one request.
+ *
+ * There is deliberately **no page to open**. The relay rides the UI session the user
+ * already has — open WLED the way you always would and the reports go out. A device nobody
+ * has looked at in a week keeps its reports in flash until somebody does.
  *
  * What that buys, concretely:
  *   - no TLS, no certificates, no CA bundle, and no mbedTLS in the image
  *   - nothing to install, run or operate: no forwarder process, no broker, no WLED backend
  *   - the DSN is the project's real DSN, not a rewritten one pointing at a local relay
  *
- * What it costs: reports only leave the device while somebody has the relay page open.
+ * What it costs: reports only leave the device while somebody has WLED open in a browser.
  * That is the correct trade for a crash reporter — the crash is discovered on the *next*
  * boot from the coredump partition, written to a flash-backed queue, and delivered whenever
- * a relay next attaches, which for a device being actively debugged is immediately. Compare
- * examples/wled_http_forwarder in this repo, which trades that "somebody has the page open"
- * requirement for a small script the developer runs on their own LAN.
+ * a relay next attaches. Compare examples/wled_http_forwarder in this repo, which trades
+ * that requirement for a small script the developer runs on their own LAN.
  *
  * ROUTES ADDED
- *   GET  /sentry                    the relay page — open this and leave it open
- *   GET  /sentry/status             JSON the page renders (also useful with curl)
+ *   GET  /sentry/status             what the SDK knows: DSN host, release, queue depth
  *   GET  /sentry/relay/poll         queued device -> host frames, base64
  *   POST /sentry/relay/status       the host's verdict on one relayed request
  *   GET  /sentry/test               capture a message event, to prove the path works
  *   GET  /sentry/crash              panic on purpose, 500ms from now
  *
- * This file plus sentry_relay_page.h is the whole usermod: WLED's v2 usermods self-register
- * via REGISTER_USERMOD (a linker-section trick, see wled00/fcn_declare.h), so no WLED source
- * file is touched, including the usermods_list.cpp that older WLED versions needed.
+ * The last two are demo affordances with no UI attached — `curl http://<device>/sentry/test`
+ * or just visit the URL. Everything else is machine-to-machine.
+ *
+ * WLED's v2 usermods self-register via REGISTER_USERMOD (a linker-section trick, see
+ * wled00/fcn_declare.h), so no WLED *source* file is touched by the usermod itself. The one
+ * change inside the WLED checkout is appending wled_ui_relay.js to wled00/data/index.js —
+ * see this example's README, and see that file's own header for why the host side has to
+ * live in the UI rather than on a page of its own.
  *
  * Coredump support depends on which Arduino-ESP32 core this links against — see
  * platformio_override.ini's `platform =` line before assuming a real backtrace will show up.
@@ -60,8 +67,6 @@
 #include <device/sentry_storage_nvs.h>
 #include <sentry_micro.h>
 #include <transport/sentry_transport_relay.hpp>
-
-#include "sentry_relay_page.h"
 
 /*
  * Your project's real DSN — unlike this repo's forwarder example, nothing here rewrites it.
@@ -203,14 +208,12 @@ public:
      */
     void connected() override
     {
-        DEBUG_PRINTF("[sentry] open http://%s/sentry to relay %u queued event(s)\n",
+        DEBUG_PRINTF("[sentry] open http://%s/ in a browser to relay %u queued event(s)\n",
             WiFi.localIP().toString().c_str(), (unsigned)sentry_buffered_count());
     }
 
     void loop() override
     {
-        syncCaptivePortalDns();
-
         /* The only thing left on the render loop: the crash trigger, which cannot run from
          * the HTTP handler that requests it (the response would never flush) and must not
          * run from the delivery task (a panic there would be a stack nobody recognises). */
@@ -236,7 +239,7 @@ public:
         }
 
         JsonArray relayInfo = user.createNestedArray(F("Sentry relay"));
-        relayInfo.add(relay_.host_ready() ? F("attached") : F("open /sentry"));
+        relayInfo.add(relay_.host_ready() ? F("attached") : F("no browser attached"));
 
         JsonArray queueInfo = user.createNestedArray(F("Sentry queue"));
         queueInfo.add(sentry_buffered_count());
@@ -282,70 +285,16 @@ private:
         return queued;
     }
 
-    /**
-     * Stand the captive-portal DNS down while a relay page is attached.
-     *
-     * In AP mode WLED starts a **wildcard** DNS server — `dnsServer.start(53, "*",
-     * WiFi.softAPIP())` in wled00/wled.cpp — that answers every question with its own
-     * address. That is exactly right for a captive portal: whatever a phone asks for, it
-     * lands on WLED's UI and the user finds the device.
-     *
-     * It is exactly wrong for this usermod. The relay page's whole job is to POST to
-     * `o<org>.ingest.<region>.sentry.io`, and with that server running the name resolves to
-     * 4.3.2.1 — the ESP32 — which then gets an HTTPS connection it has no TLS stack to
-     * answer. The browser reports a bare network error, so the failure reads as "no
-     * internet" when the phone's cellular connection was available the whole time and was
-     * never consulted. It cost a debugging session to find; nothing in it is visible from
-     * either end.
-     *
-     * Stopping the server (rather than pointing it at one domain) is deliberate: an
-     * NXDOMAIN reply is an answer, and a resolver that receives one stops looking. Silence
-     * on this interface is what makes the phone time out and ask over cellular instead.
-     *
-     * Scoped to "while a host is attached" so the captive portal still works for everyone
-     * else — including the user who is about to open this page and has not yet. Both edges
-     * matter: closing the tab restores it within kHostIdleTimeoutMs.
-     *
-     * Runs from loop() and nowhere else. WLED calls dnsServer.processNextRequest() from the
-     * same task, and DNSServer is not safe to start or stop underneath it from another one.
-     */
-    void syncCaptivePortalDns()
-    {
-        bool shouldPause = apActive && relay_.host_ready();
-        if (shouldPause == dnsPaused_) {
-            return;
-        }
-        if (shouldPause) {
-            dnsServer.stop();
-            DEBUG_PRINTLN(F("[sentry] captive-portal DNS paused so the relay page can "
-                            "resolve Sentry (a client that already cached an answer has to "
-                            "rejoin the network — iOS holds them well past the 60s TTL)"));
-        } else if (apActive) {
-            /* Only when the AP is still up: if it went down, WLED owns restarting this on
-             * its way back, and starting it here against a stale softAPIP would bind the
-             * wrong address. */
-            dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-            dnsServer.start(53, "*", WiFi.softAPIP());
-            DEBUG_PRINTLN(F("[sentry] captive-portal DNS restored"));
-        }
-        dnsPaused_ = shouldPause;
-    }
-
     /* ---- HTTP ------------------------------------------------------------------------ */
 
-    /**
-     * ORDER IS LOAD-BEARING HERE.
-     *
-     * This AsyncWebServer matches a handler's URI as a *prefix*, not an exact path — see
-     * AsyncCallbackWebHandler::canHandle(), which accepts when `_uri == url` **or**
-     * `url.startsWith(_uri + "/")` — and it dispatches to the first handler that accepts.
-     * So a handler on "/sentry" registered first claims "/sentry/status",
-     * "/sentry/relay/poll" and every other route below it, and they all quietly return the
-     * HTML page instead. Every fetch then fails inside the page's own JSON/base64 parsing,
-     * which reads exactly like a device that is not responding.
-     *
-     * The specific routes therefore go first and the page goes last. WLED's own
-     * initServer() does the same thing with "/", for the same reason.
+    /*
+     * A note on URIs, because the trap here is silent: this AsyncWebServer matches a
+     * handler's URI as a *prefix*, not an exact path — AsyncCallbackWebHandler::canHandle()
+     * accepts when `_uri == url` **or** `url.startsWith(_uri + "/")` — and dispatches to the
+     * first handler that accepts. No route below is a prefix of another, so order does not
+     * matter today. Add one that is (a bare "/sentry", say) and it will swallow every route
+     * under it, answering all of them with its own content, and every caller will fail while
+     * parsing rather than at the request.
      */
     void registerRoutes()
     {
@@ -368,28 +317,14 @@ private:
 
         server.on("/sentry/crash", HTTP_GET, [this](AsyncWebServerRequest *request) {
             request->send(200, "text/plain",
-                "Crashing in 500ms. Reconnect and watch this page — the report arrives on "
-                "the next boot.\n");
+                "Crashing in 500ms. The report is built on the next boot and relayed by "
+                "whichever browser next has WLED open.\n");
             /* Deadline set before the pending flag, not after: loop() runs on the other core
              * and only reads crashAtMs_ once it observes crashPending_ true, so this order
              * guarantees it never reads a stale (default-zero) deadline and fires
              * immediately instead of after the 500ms the response needs to flush. */
             crashAtMs_ = millis() + 500;
             crashPending_ = true;
-        });
-
-        /* Last, and guarded — see the ordering note above. The guard costs nothing and is
-         * not defensive programming for its own sake: if a future route is added below this
-         * one, it will be shadowed, and a 404 that names the reason is a great deal easier
-         * to act on than a page served where JSON was expected. */
-        server.on("/sentry", HTTP_GET, [](AsyncWebServerRequest *request) {
-            if (request->url() != "/sentry") {
-                request->send(404, "text/plain",
-                    "No such route. Note that handlers registered before this one shadow it "
-                    "by prefix — see registerRoutes().\n");
-                return;
-            }
-            request->send_P(200, "text/html", SENTRY_RELAY_PAGE);
         });
     }
 
@@ -418,11 +353,6 @@ private:
         out += sentry_coredump_is_supported() ? F("true") : F("false");
         out += F(",\"coredumpAvailable\":");
         out += sentry_coredump_available() ? F("true") : F("false");
-        /* The page uses this to explain a failed POST: in AP mode the device is the only
-         * network the browser has, and that is a materially different situation from a
-         * device sitting on a LAN with a working router. */
-        out += F(",\"apMode\":");
-        out += apActive ? F("true") : F("false");
         out += F(",\"uptime\":");
         out += millis() / 1000;
         out += F("}");
@@ -638,10 +568,6 @@ private:
      * sentry::set_transport()'s contract. The usermod instance is a static global (below),
      * so a member is fine. */
     sentry::RelayTransport relay_ { &UsermodSentry::relayWrite, this };
-
-    /* Plain bool, not atomic: only ever read or written by syncCaptivePortalDns(), which
-     * only ever runs on the loop() task. */
-    bool dnsPaused_ = false;
 
     SemaphoreHandle_t queueLock_ = nullptr;
     uint8_t queue_[kRelayQueueBytes];

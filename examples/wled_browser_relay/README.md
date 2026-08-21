@@ -1,12 +1,13 @@
 # sentry-micro + WLED — crash reporting relayed through the browser
 
 A WLED usermod that recovers a crash from the coredump partition, builds a Sentry envelope,
-and gets it to Sentry **without any TLS on the device and without anything to install or
-operate**. The device serves a page; the browser that opens it performs the HTTPS POST.
+and gets it to Sentry **without any TLS on the device, without anything to install or
+operate, and without a page anybody has to open**. Open WLED the way you always would; the
+reports go out behind the UI you are already looking at.
 
 <pre>
-  ESP32 (WLED)                    your browser                     Sentry
-  ────────────                    ────────────                     ──────
+  ESP32 (WLED)                  WLED's web UI                      Sentry
+  ────────────                  ─────────────                      ──────
   panic → coredump partition
   next boot: decode, build
     envelope, queue in NVS
@@ -32,38 +33,55 @@ poor excuse to introduce the project's first TLS stack. There is also no WLED ba
 relay through: every wled.me property is static hosting.
 
 So the device is never given a route to Sentry. It uses sentry-micro's **relay transport**
-(`src/transport/sentry_transport_relay.hpp`), which chunks a finished HTTP request — URL,
-two header values, envelope body — over any link that moves short packets both ways, and
-waits for the host on the other end to report the status. That link is normally a phone over
-BLE. Here it is a browser over HTTP polling. The frames are identical either way; the user's
-browser already has a TLS stack, a CA store and an internet connection, and this borrows all
-three for the length of one request.
+(`src/transport/sentry_transport_relay.hpp`), which chunks a finished HTTP request — URL, two
+header values, envelope body — over any link that moves short packets both ways, and waits
+for the host on the other end to report the status. That link is normally a phone over BLE.
+Here it is WLED's own web UI. The frames are identical either way; the user's browser already
+has a TLS stack, a CA store and an internet connection, and this borrows all three for the
+length of one request.
 
 What that buys:
 
 - no TLS, no certificates, no CA bundle, no mbedTLS in the image
 - nothing to install, run, or operate — no forwarder process, no broker, no backend
 - the DSN is your project's **real** DSN, not one rewritten to point at a local relay
+- **nothing for a user to do.** No page, no button, no setting. Anybody who opens WLED is
+  relaying, and does not need to know it.
 
-What it costs: **reports only leave the device while somebody has the relay page open.**
+What it costs: **reports only leave the device while somebody has WLED open in a browser.**
 That is the right trade for a crash reporter. A crash is not discovered at crash time — it is
 discovered on the *next* boot, out of the coredump partition — so it is written to a
-flash-backed queue and delivered whenever a relay next attaches. For a device being actively
-debugged, that is immediately.
+flash-backed queue and delivered whenever a relay next attaches. A device nobody has looked at
+in a week keeps its reports until somebody does.
 
-> If you need reports to leave a device with nobody watching it, see
+> If you need reports to leave a device with nobody watching it at all, see
 > [`../wled_http_forwarder`](../wled_http_forwarder) — same usermod shape, but the device
 > POSTs plain HTTP to a small script you run on your own LAN, which relays to HTTPS. That one
-> trades "somebody has the page open" for "somebody runs a process".
+> trades "somebody has WLED open" for "somebody runs a process".
+
+## What has to change in WLED
+
+Two things, and it is worth being straight about the second:
+
+1. **The usermod** — self-registers via `REGISTER_USERMOD`, referenced by absolute path from
+   `custom_usermods`. Touches no WLED source file.
+2. **~40 lines appended to `wled00/data/index.js`** — the host side of the relay protocol. A
+   usermod cannot do this for itself: WLED gives usermods routes, Info-tab rows and a settings
+   page, but no hook to run JavaScript in the main UI. (`/u`, the reserved "usermod custom web
+   page", is compiled from `wled00/data/usermod.htm` — so it is a WLED-tree change too, and
+   still a page somebody has to open.)
+
+That second one is the actual ask of this demo: *a usermod, plus this much UI*. It is written
+to be inert without the usermod — its first request is a feature check, and a WLED build
+without the usermod answers 404 and it disables itself permanently. Carrying it costs one
+request at page load and nothing after.
 
 ## Layout
 
 WLED itself is **not** vendored here — clone it separately and point
-`platformio_override.ini` at this repo. Nothing in the WLED checkout needs to change: current
-WLED usermods self-register via `REGISTER_USERMOD` (a linker-section trick), and
-`custom_usermods` supports referencing a library by absolute path
-(`LibName = symlink:///abs/path`), so the usermod lives here, in version control, rather than
-being copied into WLED's own `usermods/` folder.
+`platformio_override.ini` at this repo. `custom_usermods` supports referencing a library by
+absolute path (`LibName = symlink:///abs/path`), so the usermod lives here, in version
+control, rather than being copied into WLED's `usermods/` folder.
 
 ```
 examples/wled_browser_relay/
@@ -71,7 +89,7 @@ examples/wled_browser_relay/
 └── usermods/sentry/
     ├── library.json
     ├── usermod_sentry.cpp           # the usermod: SDK init, routes, delivery task
-    └── sentry_relay_page.h          # the relay page (HTML/JS), served from PROGMEM
+    └── wled_ui_relay.js             # the host side — append to WLED's index.js
 ```
 
 ## Requirements
@@ -85,69 +103,79 @@ examples/wled_browser_relay/
 
 1. Clone WLED locally.
 
-2. Point this repo at it and copy the override in:
+2. Point this repo at it, copy the override in, and append the relay to WLED's UI:
 
    ```
    export SENTRY_MICRO_REPO=/path/to/sentry-micro
-   cp platformio_override.ini /path/to/your/WLED/checkout/
+   cd /path/to/your/WLED/checkout
+
+   cp $SENTRY_MICRO_REPO/examples/wled_browser_relay/platformio_override.ini .
+   cat $SENTRY_MICRO_REPO/examples/wled_browser_relay/usermods/sentry/wled_ui_relay.js \
+       >> wled00/data/index.js
    ```
 
-3. Build and flash **with symbolication**, so backtraces resolve to functions and lines
-   rather than staying hex forever:
+   Appending, rather than shipping a positional patch: `index.js` is a flat script and the
+   relay is a self-contained IIFE, so there is no context for a diff to lose when WLED's UI
+   changes underneath it. `git checkout wled00/data/index.js` undoes it.
+
+   The UI is rebuilt automatically — WLED's `pio-scripts/build_ui.py` runs `npm run build` on
+   every compile, so `wled00/html_ui.h` picks the change up with no extra step. You need
+   `node` on `PATH`; WLED requires it to build anyway. Note that touching `index.js`
+   regenerates `html_ui.h` and therefore forces a **full** rebuild, not an incremental one.
+
+3. Build and flash **with symbolication**, so backtraces resolve to functions and lines rather
+   than staying hex forever:
 
    ```
    export SENTRY_MICRO_DSN='https://<key>@o<org>.ingest.us.sentry.io/<project>'
-   scripts/release.sh -e sentry_relay -d /path/to/your/WLED/checkout --upload-firmware
+   scripts/release.sh -e sentry_relay -d /path/to/your/WLED/checkout \
+       -r 'wled@17.0.0-dev' --no-commits --upload-firmware
    ```
 
    `release.sh` picks a build-id, compiles it in, stamps the matching debug-id into the ELF,
-   and uploads that ELF's debug info to Sentry — see its header for why all four steps have
-   to agree. A plain `pio run -e sentry_relay -t upload` also works and still reports
-   crashes; the frames just stay as raw addresses.
-
-   Unlike the forwarder example, `SENTRY_MICRO_DSN` here is your project's real DSN and does
-   double duty correctly: it is both what the firmware reports to and what `sentry-cli`
-   resolves the target project from.
+   and uploads that ELF's debug info to Sentry — see its header for why all four steps have to
+   agree. A plain `pio run -e sentry_relay -t upload` also works and still reports crashes; the
+   frames just stay as raw addresses.
 
    Two flags this project needs that `examples/wifi_basic` does not:
 
    - **`--no-commits`.** `release.sh` associates the project directory's commits with the
-     release, and here that directory is *WLED's* repository, not yours — its commit history
-     describes WLED's development, not what went into your build. (A shallow `git clone
-     --depth N` of WLED is refused outright for the same reason, with a clearer message.)
-   - **`-r <release>`.** Without it the release name is derived from `git describe` in the
-     sentry-micro checkout, which has nothing to do with the firmware being built. Name it
-     after WLED: `-r 'wled@17.0.0-dev'`.
+     release, and here that directory is *WLED's* repository — its history describes WLED's
+     development, not what went into your build. (A shallow `git clone --depth N` of WLED is
+     refused outright for the same reason, with a clearer message.)
+   - **`-r <release>`.** Without it the release name comes from `git describe` in the
+     sentry-micro checkout, which has nothing to do with the firmware being built.
+
+   Re-flashing changed code under a release name you already used is a trap: the build-id is
+   derived from the release name, so the new firmware claims a debug-id whose debug file
+   describes the *old* binary, and Sentry will confidently symbolicate against it. Bump the
+   release on every flash you intend to read backtraces from.
 
    If `sentry-cli` reports *"Project not found"*, check which organization your auth token
-   belongs to (`sentry-cli projects list`) before checking the project — an organization
-   token silently overrides `--org`, so a token for the wrong org fails as a missing project.
+   belongs to (`sentry-cli projects list`) before checking the project — an organization token
+   silently overrides `--org`, so a token for the wrong org fails as a missing project.
 
-4. Join the device to your WiFi the normal WLED way (its `WLED-AP` captive portal), then open:
-
-   ```
-   http://<device-ip>/sentry
-   ```
-
-   Leave that tab open.
+4. Join the device to your WiFi the normal WLED way (its `WLED-AP` captive portal), then open
+   WLED at `http://<device-ip>/`. That is the whole of it — there is nothing else to open.
 
 ## Trying it
 
-With the relay page open:
+With WLED open in a browser on the same network:
 
-- **"Send a test event"** captures a message event and relays it immediately. This is the
-  fastest way to confirm DSN, network and relay are all working, before involving a panic.
-- **"Crash the device"** panics it 500ms later (long enough for the HTTP response to flush).
-  The device writes a coredump and reboots; the page shows it going unreachable and coming
-  back. On the next boot the usermod decodes the coredump, queues the report in NVS, and the
-  delivery task ships it through the page as soon as it re-attaches — which the page does on
-  its very next poll.
-- The serial console (`pio device monitor`) shows the same sequence from the device's side,
-  including `[sentry] coredump: supported=1 available=..` at boot. `supported=0` means this
-  build's Arduino core does not have coredump-to-flash on — see "Platform" below.
-- Close the tab, crash it, and reopen the page later: the report is still there. That is the
-  NVS-backed offline buffer, and it is the reason "only while a browser is watching" is an
-  acceptable constraint rather than a hole.
+- The **Info** tab shows two rows the usermod adds — `Sentry relay: attached` and
+  `Sentry queue: N events`. That is the only place the relay is visible at all, and it is how
+  you check it is working without a console.
+- `curl http://<device-ip>/sentry/test` captures a message event and relays it within a few
+  seconds. The fastest way to confirm DSN, network and relay are all working before involving
+  a panic.
+- `curl http://<device-ip>/sentry/crash` panics the device 500ms later. It writes a coredump
+  and reboots; on the next boot the usermod decodes it, queues the report in NVS, and the
+  delivery task ships it as soon as a browser re-attaches.
+- Open the browser console for a running commentary: `[sentry] relaying for this device to
+  o…ingest.us.sentry.io`, then `[sentry] relayed 987 B -> 200` per event.
+- Close every WLED tab, crash it, and reopen WLED later: the report is still there. That is
+  the NVS-backed offline buffer, and it is why "only while a browser is open" is a delay
+  rather than a hole.
 
 Everything is inspectable with `curl`, which is deliberate:
 
@@ -160,12 +188,19 @@ curl http://<device-ip>/sentry/relay/poll    # the queued frames, base64
 
 | Route | |
 |---|---|
-| `GET /sentry` | the relay page — open this and leave it open |
-| `GET /sentry/status` | JSON the page renders, also useful on its own |
+| `GET /sentry/status` | what the SDK knows: DSN host, release, queue depth, coredump state |
 | `GET /sentry/relay/poll` | queued device→host frames, base64 |
 | `POST /sentry/relay/status` | the host's verdict on one relayed request |
 | `GET /sentry/test` | capture a message event |
 | `GET /sentry/crash` | panic on purpose, 500ms from now |
+
+The last two are demo affordances with no UI attached. Everything else is
+machine-to-machine.
+
+`GET /sentry/crash` having a destructive side effect is not an oversight — it matches WLED's
+own convention, which serves `GET /reset` to reboot the device (`wled00/wled_server.cpp`). It
+keeps the trigger to something you can paste into an address bar. If you would rather it were
+a POST, that is a one-line change and nothing else depends on the method.
 
 ## Design notes
 
@@ -177,14 +212,14 @@ re-announces it with no reconnect logic on either side. That is not an edge case
 every crash does.
 
 **Delivery runs on its own FreeRTOS task, not in `loop()`.** `RelayTransport::send()` blocks
-until the browser answers or the timeout expires — a full round-trip through a page polling
-once a second. Doing that from `loop()` would stall WLED's render for as long as it takes,
+until the browser answers or the timeout expires — a full round-trip through a UI polling on
+a timer. Doing that from `loop()` would stall WLED's render for as long as it takes,
 which for a lighting controller is the one cost that would actually disqualify the approach.
 The task is priority 1 (below Arduino's loop task) and pinned to core 0.
 
 **Frames are length-prefixed in the poll body.** HTTP hands the other end a byte stream with
 no packet boundaries in it; a BLE notification supplies those for free. So the queue stores
-`[len u16][frame]` repeated, and the page cuts them apart again.
+`[len u16][frame]` repeated, and the UI cuts them apart again.
 
 **The poll body is base64.** Not aesthetics: this AsyncWebServer's response types are either a
 `String` (not binary-safe — an envelope is full of bytes a `String` will not carry) or a
@@ -192,11 +227,21 @@ pointer it holds and reads later (also unsafe — the queue it points into is re
 next send). A third more bytes buys a body with neither caveat, and one that prints legibly
 under `curl`.
 
+**Idle polling is slow on purpose.** Five seconds when nothing is happening, half a second
+while a request is mid-flight. This runs for as long as anybody has WLED open, on a device
+whose actual job is rendering an LED strip, and a crash report is worth nothing extra for
+arriving four seconds sooner. Polls are chained with `setTimeout` after the previous one
+settles rather than fired on a `setInterval`: a poll that outlives its interval — a slow POST
+to Sentry sits inside it — would otherwise overlap with the next, both would drain the queue,
+and the responses could arrive out of order, landing DATA frames before the BEGIN that sizes
+the buffer for them.
+
 **Both ends whitelist the ingest host independently.** The device's `RelayTransport` refuses
-any URL whose host is not the DSN's, and the page refuses anything that is not
-`https://<the host /sentry/status reported>` with no embedded username. The page's check is
-not defence against this device — the page came *from* the device — but against a firmware bug
-turning the user's browser tab into an open proxy carrying their IP.
+any URL whose host is not the DSN's, and the UI refuses anything that is not
+`https://<the host /sentry/status reported>` with no embedded username. The UI's check is not
+defence against this device — the code came *from* the device — but against a firmware bug, or
+a device somebody else put on this network, turning the user's browser into an open proxy
+carrying their IP and cookies.
 
 ## Platform
 
@@ -293,29 +338,18 @@ newlib or ESP-IDF frame counting as yours would blame a file you do not have. (T
 with paths like `/home/runner/work/esp32-arduino-lib-builder/...` — the machine that built the
 prebuilt core, not yours.)
 
-## Using the device's own access point
-
-An unconfigured WLED opens `WLED-AP` and serves everything from `4.3.2.1`. The relay page
-works from there — the phone joins the device's AP and reaches Sentry over cellular, which is
-a fair demonstration of the whole idea — but two things get in the way, and neither announces
-itself:
-
-- **WLED's captive portal hijacks DNS.** In AP mode it starts a wildcard DNS server
-  (`dnsServer.start(53, "*", WiFi.softAPIP())`) that answers every query with its own address,
-  so the ingest hostname resolves to the ESP32 and the POST goes to a device with no TLS
-  stack. The browser reports a bare network error. The usermod stands that server down while
-  a relay page is attached, and restores it when the page goes away.
-- **A client that already cached the hijacked answer keeps using it.** Observed on iOS well
-  past the 60-second TTL the record was served with. Toggling Wi-Fi off and on clears it;
-  waiting does not reliably.
-
-On a device joined to a normal network neither applies — there is no captive portal and no
-wildcard DNS.
-
 ## Known issues and limitations
 
-- **Reports flow only while the page is open.** By design, discussed above. The queue is 16
-  NVS slots deep and survives reboots, so nothing is lost in the meantime; it is delayed.
+- **Reports flow only while somebody has WLED open.** By design, discussed above. The queue is
+  16 NVS slots deep and survives reboots, so nothing is lost in the meantime; it is delayed.
+- **The relay does not work while the device is its own access point.** An unconfigured WLED
+  opens `WLED-AP`, and in that mode it runs a wildcard captive-portal DNS server
+  (`dnsServer.start(53, "*", WiFi.softAPIP())`) that answers *every* query with its own
+  address — so the ingest hostname resolves to the ESP32, and the POST goes to a device with
+  no TLS stack. The browser reports a bare network error with nothing pointing at the cause.
+  Join the device to a real network; that is the setup this is for. (A client that already
+  cached the hijacked answer keeps using it, too — observed on iOS well past the 60-second TTL
+  it was served with, cleared only by toggling Wi-Fi.)
 - **Stale coredump partitions.** If you switch between partition tables, boards, or platform
   pins on the same physical chip, `esptool.py erase_flash` first. A `coredump` partition at a
   given offset in one layout can coincide with unrelated leftover bytes from a different

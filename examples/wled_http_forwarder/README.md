@@ -6,10 +6,12 @@ forwarder is a separate, stateless process (`http_forwarder.py`, in this directo
 relays plain HTTP to real HTTPS ingest.
 
 > **There is a second WLED example**, [`../wled_browser_relay`](../wled_browser_relay), which
-> needs no process at all: the device serves a page, and whichever browser has it open
-> performs the HTTPS POST on the device's behalf. Prefer that one for a demo, or for a device
-> you are actively debugging. Prefer this one when reports must leave a device with nobody
-> watching it — a forwarder on the LAN is always there; a browser tab is not.
+> needs no process at all: the relay lives in WLED's own web UI, so whoever has WLED open
+> performs the HTTPS POST on the device's behalf without knowing it. Prefer that one for a
+> demo, or for a device you are actively debugging. Prefer this one when reports must leave a
+> device with nobody watching it — a forwarder on the LAN is always there; a browser is not.
+> The trade is where the change lands: this example needs no WLED modification at all, while
+> that one appends ~40 lines to `wled00/data/index.js`.
 
 ## Layout
 
