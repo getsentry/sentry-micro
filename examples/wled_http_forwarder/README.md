@@ -5,6 +5,12 @@ envelope, and pushes it over plain HTTP to a forwarder — no TLS on the device.
 forwarder is a separate, stateless process (`http_forwarder.py`, in this directory) that
 relays plain HTTP to real HTTPS ingest.
 
+> **There is a second WLED example**, [`../wled_browser_relay`](../wled_browser_relay), which
+> needs no process at all: the device serves a page, and whichever browser has it open
+> performs the HTTPS POST on the device's behalf. Prefer that one for a demo, or for a device
+> you are actively debugging. Prefer this one when reports must leave a device with nobody
+> watching it — a forwarder on the LAN is always there; a browser tab is not.
+
 ## Layout
 
 This directory holds only what's specific to this example:

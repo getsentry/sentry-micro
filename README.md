@@ -101,6 +101,8 @@ src/                        the library
 test/                       host unit tests (Unity), run with `pio test`
 examples/
   wifi_basic/               a real sketch you can flash — WiFi + SDK init
+  wled_browser_relay/       WLED usermod — crash reports relayed through the browser
+  wled_http_forwarder/      WLED usermod — plain HTTP to a forwarder you run yourself
 scripts/                    release.sh (build + stamp + upload), serial_relay.py
 .github/actions/            the same chain as a reusable GitHub Action
 partitions/                 reference partition tables (with a `coredump` partition)
