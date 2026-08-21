@@ -209,6 +209,8 @@ public:
 
     void loop() override
     {
+        syncCaptivePortalDns();
+
         /* The only thing left on the render loop: the crash trigger, which cannot run from
          * the HTTP handler that requests it (the response would never flush) and must not
          * run from the delivery task (a panic there would be a stack nobody recognises). */
@@ -278,6 +280,54 @@ private:
             xSemaphoreGive(queueLock_);
         }
         return queued;
+    }
+
+    /**
+     * Stand the captive-portal DNS down while a relay page is attached.
+     *
+     * In AP mode WLED starts a **wildcard** DNS server — `dnsServer.start(53, "*",
+     * WiFi.softAPIP())` in wled00/wled.cpp — that answers every question with its own
+     * address. That is exactly right for a captive portal: whatever a phone asks for, it
+     * lands on WLED's UI and the user finds the device.
+     *
+     * It is exactly wrong for this usermod. The relay page's whole job is to POST to
+     * `o<org>.ingest.<region>.sentry.io`, and with that server running the name resolves to
+     * 4.3.2.1 — the ESP32 — which then gets an HTTPS connection it has no TLS stack to
+     * answer. The browser reports a bare network error, so the failure reads as "no
+     * internet" when the phone's cellular connection was available the whole time and was
+     * never consulted. It cost a debugging session to find; nothing in it is visible from
+     * either end.
+     *
+     * Stopping the server (rather than pointing it at one domain) is deliberate: an
+     * NXDOMAIN reply is an answer, and a resolver that receives one stops looking. Silence
+     * on this interface is what makes the phone time out and ask over cellular instead.
+     *
+     * Scoped to "while a host is attached" so the captive portal still works for everyone
+     * else — including the user who is about to open this page and has not yet. Both edges
+     * matter: closing the tab restores it within kHostIdleTimeoutMs.
+     *
+     * Runs from loop() and nowhere else. WLED calls dnsServer.processNextRequest() from the
+     * same task, and DNSServer is not safe to start or stop underneath it from another one.
+     */
+    void syncCaptivePortalDns()
+    {
+        bool shouldPause = apActive && relay_.host_ready();
+        if (shouldPause == dnsPaused_) {
+            return;
+        }
+        if (shouldPause) {
+            dnsServer.stop();
+            DEBUG_PRINTLN(F("[sentry] captive-portal DNS paused so the relay page can "
+                            "resolve Sentry (cached answers take up to 60s to expire)"));
+        } else if (apActive) {
+            /* Only when the AP is still up: if it went down, WLED owns restarting this on
+             * its way back, and starting it here against a stale softAPIP would bind the
+             * wrong address. */
+            dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+            dnsServer.start(53, "*", WiFi.softAPIP());
+            DEBUG_PRINTLN(F("[sentry] captive-portal DNS restored"));
+        }
+        dnsPaused_ = shouldPause;
     }
 
     /* ---- HTTP ------------------------------------------------------------------------ */
@@ -367,6 +417,11 @@ private:
         out += sentry_coredump_is_supported() ? F("true") : F("false");
         out += F(",\"coredumpAvailable\":");
         out += sentry_coredump_available() ? F("true") : F("false");
+        /* The page uses this to explain a failed POST: in AP mode the device is the only
+         * network the browser has, and that is a materially different situation from a
+         * device sitting on a LAN with a working router. */
+        out += F(",\"apMode\":");
+        out += apActive ? F("true") : F("false");
         out += F(",\"uptime\":");
         out += millis() / 1000;
         out += F("}");
@@ -582,6 +637,10 @@ private:
      * sentry::set_transport()'s contract. The usermod instance is a static global (below),
      * so a member is fine. */
     sentry::RelayTransport relay_ { &UsermodSentry::relayWrite, this };
+
+    /* Plain bool, not atomic: only ever read or written by syncCaptivePortalDns(), which
+     * only ever runs on the loop() task. */
+    bool dnsPaused_ = false;
 
     SemaphoreHandle_t queueLock_ = nullptr;
     uint8_t queue_[kRelayQueueBytes];

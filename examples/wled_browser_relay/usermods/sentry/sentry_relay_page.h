@@ -96,6 +96,7 @@ var RESULT_OK = 0, RESULT_UNAVAILABLE = 1, RESULT_REJECTED = 2,
 var POLL_MS = 1000;
 
 var allowedHost = null;   /* the one host we will POST to; from the device's own DSN */
+var apMode = false;       /* device is its own access point: the browser has no router */
 var pending = null;       /* the request being assembled, or null */
 var relayed = 0;
 
@@ -129,6 +130,7 @@ function b64ToBytes(s) {
 
 function renderStatus(st) {
   allowedHost = (st.host || "").toLowerCase() || null;
+  apMode = !!st.apMode;
   document.getElementById("s-host").textContent = st.host || "(no DSN)";
   document.getElementById("s-release").textContent = st.release || "-";
   document.getElementById("s-buffered").textContent = st.buffered;
@@ -228,6 +230,16 @@ async function performRequest(req) {
     /* No network on this side either. UNAVAILABLE tells the device to keep the event
        buffered and try again rather than treating it as delivered. */
     log("relay fetch failed: " + err, "e");
+    if (apMode) {
+      /* Worth spelling out, because the browser reports this as an ordinary network error
+         and the actual cause is invisible from here: joined to the device's own access
+         point, this browser has no router, so the POST has to go over cellular. The device
+         stands its captive-portal DNS down while this page is attached to let that happen,
+         but an answer already cached from before that takes up to 60 seconds to expire. */
+      log("you are on the device's own access point, so this POST has to go over cellular. " +
+          "If it keeps failing: wait a minute for the captive-portal DNS answer to expire, " +
+          "or toggle Wi-Fi off and on.", "y");
+    }
     await sendStatusFrame(req.reqId, RESULT_UNAVAILABLE);
   }
 }
