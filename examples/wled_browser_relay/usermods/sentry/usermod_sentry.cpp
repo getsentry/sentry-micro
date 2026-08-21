@@ -318,7 +318,8 @@ private:
         if (shouldPause) {
             dnsServer.stop();
             DEBUG_PRINTLN(F("[sentry] captive-portal DNS paused so the relay page can "
-                            "resolve Sentry (cached answers take up to 60s to expire)"));
+                            "resolve Sentry (a client that already cached an answer has to "
+                            "rejoin the network — iOS holds them well past the 60s TTL)"));
         } else if (apActive) {
             /* Only when the AP is still up: if it went down, WLED owns restarting this on
              * its way back, and starting it here against a stale softAPIP would bind the

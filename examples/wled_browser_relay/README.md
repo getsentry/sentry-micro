@@ -240,6 +240,25 @@ A production usermod would want neither override: it needs an upstream WLED plat
 coredump-to-flash enabled and a partition table that reserves 64K. Both are one-line changes
 in WLED, and they are the conversation this demo exists to start.
 
+## Using the device's own access point
+
+An unconfigured WLED opens `WLED-AP` and serves everything from `4.3.2.1`. The relay page
+works from there — the phone joins the device's AP and reaches Sentry over cellular, which is
+a fair demonstration of the whole idea — but two things get in the way, and neither announces
+itself:
+
+- **WLED's captive portal hijacks DNS.** In AP mode it starts a wildcard DNS server
+  (`dnsServer.start(53, "*", WiFi.softAPIP())`) that answers every query with its own address,
+  so the ingest hostname resolves to the ESP32 and the POST goes to a device with no TLS
+  stack. The browser reports a bare network error. The usermod stands that server down while
+  a relay page is attached, and restores it when the page goes away.
+- **A client that already cached the hijacked answer keeps using it.** Observed on iOS well
+  past the 60-second TTL the record was served with. Toggling Wi-Fi off and on clears it;
+  waiting does not reliably.
+
+On a device joined to a normal network neither applies — there is no captive portal and no
+wildcard DNS.
+
 ## Known issues and limitations
 
 - **Reports flow only while the page is open.** By design, discussed above. The queue is 16

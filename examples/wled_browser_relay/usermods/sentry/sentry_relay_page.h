@@ -237,8 +237,9 @@ async function performRequest(req) {
          stands its captive-portal DNS down while this page is attached to let that happen,
          but an answer already cached from before that takes up to 60 seconds to expire. */
       log("you are on the device's own access point, so this POST has to go over cellular. " +
-          "If it keeps failing: wait a minute for the captive-portal DNS answer to expire, " +
-          "or toggle Wi-Fi off and on.", "y");
+          "Toggle Wi-Fi off and on to fix it: the captive-portal DNS answered for this host " +
+          "before the device stood that server down, and iOS holds such answers well past " +
+          "the 60s TTL they were served with.", "y");
     }
     await sendStatusFrame(req.reqId, RESULT_UNAVAILABLE);
   }
