@@ -11,7 +11,7 @@ relays plain HTTP to real HTTPS ingest.
 > demo, or for a device you are actively debugging. Prefer this one when reports must leave a
 > device with nobody watching it — a forwarder on the LAN is always there; a browser is not.
 > The trade is where the change lands: this example needs no WLED modification at all, while
-> that one appends ~40 lines to `wled00/data/index.js`.
+> that one appends ~150 lines to `wled00/data/index.js`.
 
 ## Layout
 

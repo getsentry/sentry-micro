@@ -65,11 +65,12 @@ Two things, and it is worth being straight about the second:
 
 1. **The usermod** — self-registers via `REGISTER_USERMOD`, referenced by absolute path from
    `custom_usermods`. Touches no WLED source file.
-2. **~40 lines appended to `wled00/data/index.js`** — the host side of the relay protocol. A
-   usermod cannot do this for itself: WLED gives usermods routes, Info-tab rows and a settings
-   page, but no hook to run JavaScript in the main UI. (`/u`, the reserved "usermod custom web
-   page", is compiled from `wled00/data/usermod.htm` — so it is a WLED-tree change too, and
-   still a page somebody has to open.)
+2. **~150 lines appended to `wled00/data/index.js`** (240 in the file, with its comments) —
+   the host side of the relay protocol. A usermod cannot do this for itself: WLED gives
+   usermods routes, Info-tab rows and a settings page, but no hook to run JavaScript in the
+   main UI. (`/u`, the reserved "usermod custom web page", is compiled from
+   `wled00/data/usermod.htm` — so it is a WLED-tree change too, and still a page somebody has
+   to open.)
 
 That second one is the actual ask of this demo: *a usermod, plus this much UI*. It is written
 to be inert without the usermod — its first request is a feature check, and a WLED build
