@@ -298,8 +298,9 @@ private:
      */
     void registerRoutes()
     {
-        server.on("/sentry/status", HTTP_GET,
-            [this](AsyncWebServerRequest *request) { request->send(200, "application/json", statusJson()); });
+        server.on("/sentry/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
+            request->send(200, "application/json", statusJson());
+        });
 
         server.on("/sentry/relay/poll", HTTP_GET,
             [this](AsyncWebServerRequest *request) { handlePoll(request); });
@@ -476,8 +477,8 @@ private:
 
         if (testPending_) {
             testPending_ = false;
-            sentry_response_t response = sentry::capture_message(
-                SENTRY_LEVEL_INFO, "WLED test event from the relay page");
+            sentry_response_t response
+                = sentry::capture_message(SENTRY_LEVEL_INFO, "WLED test event from the relay page");
             DEBUG_PRINTF("[sentry] test event result %d (http %u)\n", (int)response.result,
                 (unsigned)response.http_status);
         }
@@ -555,8 +556,8 @@ private:
         bool crashed = sentry_reset_reason_is_crash(dev.reset_reason);
 
         char message[96];
-        snprintf(
-            message, sizeof(message), "WLED booted: %s", sentry_reset_reason_name(dev.reset_reason));
+        snprintf(message, sizeof(message), "WLED booted: %s",
+            sentry_reset_reason_name(dev.reset_reason));
 
         sentry_response_t response
             = sentry::capture_message(crashed ? SENTRY_LEVEL_FATAL : SENTRY_LEVEL_INFO, message);
